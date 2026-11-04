@@ -64,6 +64,27 @@ void main() {
     });
   });
 
+  group('Repeats and checklists', () {
+    test('reads and writes checklist lines', () {
+      final items = parseChecklist('[x] One\n[ ] Two\nnot a step\n[X] Three');
+      expect(items.map((i) => i.text), ['One', 'Two', 'Three']);
+      expect(items.map((i) => i.done), [true, false, true]);
+      expect(formatChecklist(items), '[x] One\n[ ] Two\n[x] Three');
+    });
+
+    test('ignores repeat rules it does not know', () {
+      expect(Task.fromJson({'id': 'a', 'title': 'x', 'recurrence': 'sometimes'}).recurrence, '');
+      expect(Task.fromJson({'id': 'a', 'title': 'x', 'recurrence': 'weekly'}).recurrence, 'weekly');
+    });
+
+    test('uses the completion time, then falls back to the last update', () {
+      const finished = Task(id: 'a', title: 'x', status: TaskStatus.done, completedAt: '2026-03-02T10:00:00', updatedAt: '2026-09-09T10:00:00');
+      const older = Task(id: 'b', title: 'x', status: TaskStatus.done, updatedAt: '2026-09-09T10:00:00');
+      expect(completedOn(finished), '2026-03-02');
+      expect(completedOn(older), '2026-09-09');
+    });
+  });
+
   group('TaskApi', () {
     test('follows the Apps Script redirect after a POST', () async {
       final calls = <String>[];
@@ -93,6 +114,33 @@ void main() {
       await expectLater(
         api.list(),
         throwsA(isA<ApiException>().having((e) => e.message, 'message', 'Invalid API token.')),
+      );
+    });
+
+    test('treats server outages as retryable', () async {
+      final client = MockClient((_) async => http.Response('', 503));
+      final api = TaskApi(url: 'https://script.google.com/x/exec', token: 't', client: client);
+      await expectLater(api.list(), throwsA(isA<NetworkException>()));
+    });
+
+    test('treats a dropped connection as retryable', () async {
+      final client = MockClient((_) async => throw http.ClientException('no route'));
+      final api = TaskApi(url: 'https://script.google.com/x/exec', token: 't', client: client);
+      await expectLater(api.list(), throwsA(isA<NetworkException>()));
+    });
+
+    test('does not retry a refusal', () async {
+      final client = MockClient((_) async => http.Response(jsonEncode({'ok': false, 'error': 'Invalid API token.'}), 200));
+      final api = TaskApi(url: 'https://script.google.com/x/exec', token: 't', client: client);
+      await expectLater(api.list(), throwsA(isNot(isA<NetworkException>())));
+    });
+
+    test('explains an outdated Apps Script', () async {
+      final client = MockClient((_) async => http.Response(jsonEncode({'ok': false, 'error': 'Unknown action: batch'}), 200));
+      final api = TaskApi(url: 'https://script.google.com/x/exec', token: 't', client: client);
+      await expectLater(
+        api.list(),
+        throwsA(isA<ApiException>().having((e) => e.message, 'message', contains('out of date'))),
       );
     });
 

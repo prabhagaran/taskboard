@@ -11,6 +11,10 @@ A lightweight personal task manager. The frontend is a static site (hosted free 
 - **Tags and saved filters:** label tasks and keep filter combinations (saved per device)
 - **Links:** attach Google Drive files or any web link to a task
 - **Task history:** every change is logged to a `History` sheet and shown on the task
+- **Repeating tasks and checklists:** finishing a repeating task creates the next one, and steps show progress on the card
+- **Offline edits:** changes wait in a queue and sync when you reconnect
+- **Conflict warnings:** if a task changed on another device, you choose whether to keep your edit
+- **Reminders and backups:** a daily email of due tasks, phone notifications, and nightly copies of the sheet
 - **Command palette** (`Ctrl K`): jump to any task, project or view
 - Light, dark and system themes; works on phones
 - Every task is a row in your Google Sheet, so you can also edit, sort, or chart it there
@@ -35,7 +39,15 @@ GitHub Pages (index.html, app.js)  ──POST JSON──▶  Apps Script web app
 
 > "Anyone" means the URL is reachable without a Google login. Every request still needs the API token, so keep the token private. If it ever leaks, run `rotateToken()` in Apps Script and enter the new token in the app.
 
-**Optional: Google Calendar sync.** Run `setupCalendarSync` once in Apps Script and approve the Calendar permission. Open tasks with due dates then sync hourly into a separate calendar named TaskBoard. Run it before deploying a new version, so the web app is not left waiting for that approval.
+**Optional automation.** Run each of these once in Apps Script and approve its permission, before deploying a new version, so the web app is not left waiting for that approval:
+
+| Function | What it does |
+|----------|--------------|
+| `setupCalendarSync` | Syncs open tasks with due dates hourly into a separate calendar named TaskBoard |
+| `setupReminders` | Emails you each morning around 8:00 when tasks are due or overdue |
+| `setupBackups` | Copies the spreadsheet nightly into a Drive folder named TaskBoard backups, keeping the latest 14 |
+
+**Per-device tokens.** Run `createDeviceTokens` once to create a `Devices` sheet. Type a name for each device in column A, then run it again to fill in tokens. Use a device's token in place of the main one. To revoke a lost device, delete its row. The main `API_TOKEN` keeps working, so run `rotateToken` as well if it may be exposed.
 
 **After changing `Code.gs` later:** use **Deploy → Manage deployments → Edit (pencil) → Version: New version**. This keeps the same URL.
 
@@ -60,7 +72,7 @@ Repeat this once on each browser or device you use.
 
 ## Android app
 
-[`mobile/`](mobile/) is a Flutter app that uses the same Google Sheet and web app. It has Today, Tasks, Calendar, and Dashboard screens, a home-screen widget for today's tasks, swipe to complete or delete, hold and drag to reorder, and a tablet layout. It shows your last synced tasks when offline (changes need a connection).
+[`mobile/`](mobile/) is a Flutter app that uses the same Google Sheet and web app. It has Today, Tasks, Calendar, and Dashboard screens, a home-screen widget for today's tasks, swipe to complete or delete, hold and drag to reorder, and a tablet layout. Offline, it shows your last synced tasks and queues your changes until you reconnect. Turn on **Due date reminders** in Settings for a notification at 9:00 on days with tasks due.
 
 ```bash
 cd mobile
@@ -68,14 +80,16 @@ flutter build apk --release
 # Output: build/app/outputs/flutter-apk/app-release.apk
 ```
 
+Release builds are signed with the key in `android/upload-keystore.jks`, using the passwords in `android/key.properties`. Neither file is in git, so **back up both somewhere safe**. Without them you can't publish an update that installs over the app, and without `key.properties` a build falls back to a debug key.
+
 Copy the APK to your phone, open it, and allow installs from that source. On first launch, enter the web app URL and API token. The token is kept in Android's encrypted storage.
 
 ## Sheet format
 
-| id | title | description | status | priority | project | dueDate | createdAt | updatedAt | tags | links | sortOrder |
-|----|-------|-------------|--------|----------|---------|---------|-----------|-----------|------|-------|-----------|
+| id | title | description | status | priority | project | dueDate | createdAt | updatedAt | tags | links | sortOrder | completedAt | recurrence | checklist |
+|----|-------|-------------|--------|----------|---------|---------|-----------|-----------|------|-------|-----------|-------------|------------|-----------|
 
-Older sheets gain the last three columns automatically the first time the new script runs.
+Older sheets gain any missing columns automatically the first time a new script runs.
 
 - `status`: `todo`, `inprogress`, `done`
 - `priority`: `low`, `medium`, `high`
@@ -83,6 +97,9 @@ Older sheets gain the last three columns automatically the first time the new sc
 - `tags`: comma-separated
 - `links`: one http(s) link per line
 - `sortOrder`: position set by dragging; leave blank
+- `completedAt`: set automatically when a task is finished
+- `recurrence`: blank, `daily`, `weekly`, `monthly` or `yearly`
+- `checklist`: one step per line, as `[ ] step` or `[x] step`
 
 You can edit rows directly in the sheet. The app picks up changes when you click refresh or switch back to its tab.
 

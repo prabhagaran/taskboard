@@ -13,6 +13,11 @@ class ApiException implements Exception {
   String toString() => message;
 }
 
+/// The server could not be reached, so the request may succeed if retried.
+class NetworkException extends ApiException {
+  NetworkException(super.message);
+}
+
 /// Client for the Apps Script web app in `apps-script/Code.gs`.
 class TaskApi {
   TaskApi({required this.url, required this.token, http.Client? client})
@@ -31,17 +36,11 @@ class TaskApi {
         .toList();
   }
 
-  Future<Task> create(Task task) async {
-    final data = await _call('create', {'task': task.toJson()});
-    return Task.fromJson(data['task'] as Map<String, dynamic>);
+  /// Applies writes in order under one lock; each op reports its own result.
+  Future<List<Map<String, dynamic>>> batch(List<Map<String, dynamic>> ops) async {
+    final data = await _call('batch', {'ops': ops});
+    return (data['results'] as List).cast<Map<String, dynamic>>();
   }
-
-  Future<Task> update(Task task) async {
-    final data = await _call('update', {'task': task.toJson()});
-    return Task.fromJson(data['task'] as Map<String, dynamic>);
-  }
-
-  Future<void> delete(String id) => _call('delete', {'id': id});
 
   Future<List<HistoryEntry>> history(String id) async {
     final data = await _call('history', {'id': id});
@@ -70,13 +69,14 @@ class TaskApi {
         res = await _client.get(Uri.parse(location)).timeout(_timeout);
       }
     } on TimeoutException {
-      throw ApiException('The server took too long to respond.');
-    } on ApiException {
-      rethrow;
+      throw NetworkException('The server took too long to respond.');
     } catch (_) {
-      throw ApiException('Could not reach the server. Check your connection.');
+      throw NetworkException('Could not reach the server. Check your connection.');
     }
 
+    if (res.statusCode >= 500) {
+      throw NetworkException('Server responded ${res.statusCode}.');
+    }
     if (res.statusCode != 200) {
       throw ApiException('Server responded ${res.statusCode}.');
     }
@@ -92,7 +92,12 @@ class TaskApi {
       throw ApiException('Unexpected response from the server.');
     }
     if (decoded['ok'] != true) {
-      throw ApiException('${decoded['error'] ?? 'Request failed.'}');
+      final error = '${decoded['error'] ?? 'Request failed.'}';
+      throw ApiException(
+        error.startsWith('Unknown action')
+            ? 'Apps Script is out of date. Deploy the latest Code.gs as a new version.'
+            : error,
+      );
     }
     return decoded;
   }

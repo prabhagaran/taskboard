@@ -39,6 +39,9 @@ class Task {
     this.tags = '',
     this.links = '',
     this.sortOrder = '',
+    this.completedAt = '',
+    this.recurrence = '',
+    this.checklist = '',
     this.createdAt = '',
     this.updatedAt = '',
   });
@@ -61,6 +64,15 @@ class Task {
 
   /// Hand-placed position in a list; empty until the task is first moved.
   final String sortOrder;
+
+  /// When the task was last finished; empty while open.
+  final String completedAt;
+
+  /// One of [recurrenceLabels]' keys, or empty when it doesn't repeat.
+  final String recurrence;
+
+  /// Steps as lines of `[ ] text` or `[x] text`.
+  final String checklist;
   final String createdAt;
   final String updatedAt;
 
@@ -70,6 +82,8 @@ class Task {
   List<String> get linkList => cleanLinks(links).split('\n').where((l) => l.isNotEmpty).toList();
 
   double? get order => double.tryParse(sortOrder);
+
+  List<ChecklistItem> get steps => parseChecklist(checklist);
 
   bool get isOpen => status != TaskStatus.done;
   bool get isOverdue => isOpen && dueDate.isNotEmpty && dueDate.compareTo(todayKey()) < 0;
@@ -88,6 +102,9 @@ class Task {
       tags: '${json['tags'] ?? ''}',
       links: '${json['links'] ?? ''}',
       sortOrder: '${json['sortOrder'] ?? ''}',
+      completedAt: '${json['completedAt'] ?? ''}',
+      recurrence: recurrenceLabels.containsKey(json['recurrence']) ? '${json['recurrence']}' : '',
+      checklist: '${json['checklist'] ?? ''}',
       createdAt: '${json['createdAt'] ?? ''}',
       updatedAt: '${json['updatedAt'] ?? ''}',
     );
@@ -104,6 +121,9 @@ class Task {
         'tags': tags,
         'links': links,
         'sortOrder': sortOrder,
+        'completedAt': completedAt,
+        'recurrence': recurrence,
+        'checklist': checklist,
         'createdAt': createdAt,
         'updatedAt': updatedAt,
       };
@@ -118,6 +138,8 @@ class Task {
     String? tags,
     String? links,
     String? sortOrder,
+    String? recurrence,
+    String? checklist,
   }) =>
       Task(
         id: id,
@@ -130,6 +152,9 @@ class Task {
         tags: tags ?? this.tags,
         links: links ?? this.links,
         sortOrder: sortOrder ?? this.sortOrder,
+        completedAt: completedAt,
+        recurrence: recurrence ?? this.recurrence,
+        checklist: checklist ?? this.checklist,
         createdAt: createdAt,
         updatedAt: updatedAt,
       );
@@ -210,9 +235,35 @@ class SavedFilter {
   Map<String, dynamic> toJson() => {'name': name, 'query': query, 'project': project, 'tag': tag};
 }
 
-/// Local day a done task was finished, approximated by its last update.
+/// Repeat rules understood by the backend, with their labels.
+const recurrenceLabels = {
+  'daily': 'Every day',
+  'weekly': 'Every week',
+  'monthly': 'Every month',
+  'yearly': 'Every year',
+};
+
+class ChecklistItem {
+  ChecklistItem({required this.text, this.done = false});
+
+  final String text;
+  bool done;
+}
+
+List<ChecklistItem> parseChecklist(String text) {
+  final line = RegExp(r'^\[( |x)\]\s*(.*)$', caseSensitive: false);
+  return text.split('\n').map((l) => line.firstMatch(l.trim())).nonNulls.map((m) {
+    return ChecklistItem(text: m[2]!, done: m[1]!.toLowerCase() == 'x');
+  }).toList();
+}
+
+String formatChecklist(List<ChecklistItem> items) =>
+    items.map((i) => '[${i.done ? 'x' : ' '}] ${i.text}').join('\n');
+
+/// Local day a done task was finished. Tasks finished before completedAt
+/// existed fall back to their last update.
 String completedOn(Task task) {
   if (task.status != TaskStatus.done) return '';
-  final parsed = DateTime.tryParse(task.updatedAt);
+  final parsed = DateTime.tryParse(task.completedAt.isEmpty ? task.updatedAt : task.completedAt);
   return parsed == null ? '' : dateKey(parsed.toLocal());
 }

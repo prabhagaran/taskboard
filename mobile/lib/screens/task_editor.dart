@@ -25,6 +25,9 @@ class _TaskEditorState extends State<TaskEditor> {
   late final TextEditingController _project;
   late final TextEditingController _tags;
   late final TextEditingController _links;
+  final _newStep = TextEditingController();
+  late List<ChecklistItem> _steps;
+  late String _recurrence;
   late TaskStatus _status;
   late TaskPriority _priority;
   late String _dueDate;
@@ -41,6 +44,8 @@ class _TaskEditorState extends State<TaskEditor> {
     _project = TextEditingController(text: task?.project);
     _tags = TextEditingController(text: task?.tags);
     _links = TextEditingController(text: task?.links);
+    _steps = task?.steps ?? [];
+    _recurrence = task?.recurrence ?? '';
     _status = task?.status ?? TaskStatus.todo;
     _priority = task?.priority ?? TaskPriority.medium;
     _dueDate = task?.dueDate ?? widget.initialDueDate;
@@ -53,6 +58,7 @@ class _TaskEditorState extends State<TaskEditor> {
     _project.dispose();
     _tags.dispose();
     _links.dispose();
+    _newStep.dispose();
     super.dispose();
   }
 
@@ -66,6 +72,13 @@ class _TaskEditorState extends State<TaskEditor> {
       lastDate: DateTime(now.year + 10),
     );
     if (picked != null) setState(() => _dueDate = dateKey(picked));
+  }
+
+  void _addStep() {
+    final text = _newStep.text.trim();
+    if (text.isEmpty) return;
+    setState(() => _steps.add(ChecklistItem(text: text)));
+    _newStep.clear();
   }
 
   void _save() {
@@ -85,6 +98,8 @@ class _TaskEditorState extends State<TaskEditor> {
       dueDate: _dueDate,
       tags: cleanTags(_tags.text),
       links: cleanLinks(_links.text),
+      recurrence: _recurrence,
+      checklist: formatChecklist(_steps),
     );
     if (_isNew) {
       store.add(task);
@@ -225,6 +240,57 @@ class _TaskEditorState extends State<TaskEditor> {
                 labelText: 'Description',
                 alignLabelWithHint: true,
                 border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 16),
+            DropdownButtonFormField<String>(
+              initialValue: _recurrence,
+              decoration: const InputDecoration(
+                labelText: 'Repeats',
+                prefixIcon: Icon(Icons.repeat),
+                border: OutlineInputBorder(),
+              ),
+              items: [
+                const DropdownMenuItem(value: '', child: Text('Never')),
+                for (final rule in recurrenceLabels.entries)
+                  DropdownMenuItem(value: rule.key, child: Text(rule.value)),
+              ],
+              onChanged: (value) => setState(() => _recurrence = value ?? ''),
+            ),
+            const SizedBox(height: 20),
+            Text(
+              _steps.isEmpty
+                  ? 'Checklist'
+                  : 'Checklist (${_steps.where((s) => s.done).length} of ${_steps.length})',
+              style: label,
+            ),
+            for (final (i, step) in _steps.indexed)
+              CheckboxListTile(
+                key: ObjectKey(step),
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                controlAffinity: ListTileControlAffinity.leading,
+                value: step.done,
+                title: Text(step.text),
+                secondary: IconButton(
+                  tooltip: 'Remove step',
+                  icon: const Icon(Icons.close, size: 20),
+                  onPressed: () => setState(() => _steps.removeAt(i)),
+                ),
+                onChanged: (value) => setState(() => step.done = value ?? false),
+              ),
+            TextField(
+              controller: _newStep,
+              textCapitalization: TextCapitalization.sentences,
+              textInputAction: TextInputAction.done,
+              onSubmitted: (_) => _addStep(),
+              decoration: InputDecoration(
+                hintText: 'Add a step',
+                suffixIcon: IconButton(
+                  tooltip: 'Add step',
+                  icon: const Icon(Icons.add),
+                  onPressed: _addStep,
+                ),
               ),
             ),
             const SizedBox(height: 16),

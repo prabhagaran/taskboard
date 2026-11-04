@@ -171,6 +171,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   style: TextStyle(color: _statusIsError ? scheme.error : scheme.primary),
                 ),
               ),
+            if (store.isConnected)
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Due date reminders'),
+                  subtitle: const Text('A notification at 9:00 on days with tasks due'),
+                  value: store.remindersOn,
+                  onChanged: (on) async {
+                    if (!await store.setReminders(on)) {
+                      _setStatus('Allow notifications for TaskBoard in Android settings.', error: true);
+                    }
+                  },
+                ),
+              ),
             const SizedBox(height: 28),
             Text('Theme', style: text.labelLarge),
             const SizedBox(height: 8),

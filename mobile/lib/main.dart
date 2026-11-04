@@ -11,6 +11,12 @@ import 'widgets/common.dart';
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   final store = TaskStore()..onError = showMessage;
+  store.onSynced = (count) => showMessage('Synced $count waiting change${count == 1 ? '' : 's'}');
+  store.onConflict = (mine, theirs) => showAction(
+        '"${theirs.title}" was changed somewhere else, so your edit wasn\'t saved.',
+        'Keep mine',
+        () => store.forceEdit(mine),
+      );
   store.init();
   runApp(StoreScope(store: store, child: const TaskBoardApp()));
 }

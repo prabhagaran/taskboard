@@ -16,6 +16,8 @@ const PRIORITY_RANK = { high: 0, medium: 1, low: 2 };
 const CONFIG_KEY = 'taskboard.config';
 const PREFS_KEY = 'taskboard.prefs';
 const LOCAL_TASKS_KEY = 'taskboard.localTasks';
+const CACHE_KEY = 'taskboard.cache';
+const QUEUE_KEY = 'taskboard.queue';
 
 // Smart lists in the sidebar. `test` selects tasks; `badge` is the sidebar count.
 const SCOPES = [
@@ -57,6 +59,7 @@ const state = {
   filters: { search: '', priority: '', tag: '' },
   calendar: { month: null, expanded: '' },
   selection: new Set(),
+  queue: storageGet(QUEUE_KEY, []), // Writes waiting for a connection.
   quickAdd: null, // { status, text } while the inline board composer is open
   pending: 0,
   syncError: '',
@@ -65,11 +68,19 @@ const state = {
 if (state.prefs.view === 'list') state.prefs.view = 'table';
 
 const isRemote = () => Boolean(state.config.url && state.config.token);
+if (isRemote()) {
+  // Show the last synced tasks at once; Apps Script can take seconds.
+  state.tasks = storageGet(CACHE_KEY, []).map(normalize);
+  state.loaded = state.tasks.length > 0;
+}
 const savePrefs = () => storageSet(PREFS_KEY, state.prefs);
 
 /* ==========================================================================
    API
    ========================================================================== */
+/** The server could not be reached, so the request may succeed if retried. */
+class NetworkError extends Error {}
+
 async function remoteCall(action, payload = {}, config = state.config) {
   let res;
   try {
@@ -80,8 +91,9 @@ async function remoteCall(action, payload = {}, config = state.config) {
       body: JSON.stringify({ action, token: config.token, ...payload }),
     });
   } catch {
-    throw new Error('Could not reach the web app. Check the URL ends in /exec and that you are online.');
+    throw new NetworkError('Could not reach the web app. Check the URL ends in /exec and that you are online.');
   }
+  if (res.status >= 500) throw new NetworkError(`Server responded ${res.status}`);
   if (!res.ok) throw new Error(`Server responded ${res.status}`);
   let data;
   try {
@@ -89,7 +101,10 @@ async function remoteCall(action, payload = {}, config = state.config) {
   } catch {
     throw new Error('Unexpected response. Check the web app URL and that access is set to "Anyone".');
   }
-  if (!data.ok) throw new Error(data.error || 'Request failed');
+  if (!data.ok) {
+    if (/^Unknown action/.test(data.error)) throw new Error('Apps Script is out of date. Deploy the latest Code.gs as a new version.');
+    throw new Error(data.error || 'Request failed');
+  }
   return data;
 }
 
@@ -103,27 +118,53 @@ const api = {
     if (isRemote()) return (await remoteCall('list')).tasks;
     return localStore.read();
   },
-  async create(task) {
-    if (isRemote()) return (await remoteCall('create', { task })).task;
-    const now = new Date().toISOString();
-    const saved = { ...task, createdAt: now, updatedAt: now };
-    localStore.write([...localStore.read().filter((t) => t.id !== task.id), saved]);
-    return saved;
-  },
-  async update(task) {
-    if (isRemote()) return (await remoteCall('update', { task })).task;
-    const saved = { ...task, updatedAt: new Date().toISOString() };
-    localStore.write(localStore.read().map((t) => (t.id === task.id ? saved : t)));
-    return saved;
-  },
-  async remove(id) {
-    if (isRemote()) return remoteCall('delete', { id });
-    localStore.write(localStore.read().filter((t) => t.id !== id));
-  },
   async history(id) {
     return (await remoteCall('history', { id })).entries;
   },
 };
+
+// Mirrors what Apps Script does on a write, for local mode.
+function applyLocally(op) {
+  const tasks = localStore.read();
+  const now = new Date().toISOString();
+  if (op.action === 'delete') {
+    localStore.write(tasks.filter((t) => t.id !== op.id));
+    return { ok: true };
+  }
+  if (op.action === 'create') {
+    const task = { ...op.task, createdAt: now, updatedAt: now, completedAt: op.task.status === 'done' ? now : '' };
+    localStore.write([...tasks.filter((t) => t.id !== task.id), task]);
+    return { ok: true, task };
+  }
+  const before = tasks.find((t) => t.id === op.task.id);
+  if (!before) return { ok: false, error: 'Task not found.' };
+  const finished = before.status !== 'done' && op.task.status === 'done';
+  const task = { ...op.task, updatedAt: now, completedAt: finished ? now : op.task.status === 'done' ? before.completedAt : '' };
+  const next = finished && task.recurrence ? nextOccurrence(task) : null;
+  localStore.write([...tasks.map((t) => (t.id === task.id ? task : t)), ...(next ? [next] : [])]);
+  return { ok: true, task, next };
+}
+
+function advanceDay(key, recurrence, steps) {
+  const date = parseLocal(key);
+  if (recurrence === 'daily') date.setDate(date.getDate() + steps);
+  else if (recurrence === 'weekly') date.setDate(date.getDate() + steps * 7);
+  else {
+    const months = recurrence === 'monthly' ? steps : steps * 12;
+    const lastDay = new Date(date.getFullYear(), date.getMonth() + months + 1, 0).getDate();
+    return localDate(new Date(date.getFullYear(), date.getMonth() + months, Math.min(date.getDate(), lastDay)));
+  }
+  return localDate(date);
+}
+
+function nextOccurrence(task) {
+  const today = todayStr();
+  const start = task.dueDate || today;
+  let due = start;
+  for (let step = 1; due <= today; step++) due = advanceDay(start, task.recurrence, step);
+  const now = new Date().toISOString();
+  return { ...task, id: newId(), status: 'todo', dueDate: due, sortOrder: '', completedAt: '', createdAt: now, updatedAt: now, checklist: task.checklist.replace(/^\[x\]/gim, '[ ]') };
+}
 
 async function withSync(fn) {
   state.pending++;
@@ -156,6 +197,9 @@ function normalize(task) {
     tags: task.tags || '',
     links: task.links || '',
     sortOrder: task.sortOrder === undefined || task.sortOrder === null ? '' : String(task.sortOrder),
+    completedAt: task.completedAt || '',
+    recurrence: task.recurrence || '',
+    checklist: task.checklist || '',
     dueDate: /^\d{4}-\d{2}-\d{2}$/.test(task.dueDate || '') ? task.dueDate : '',
     createdAt: task.createdAt || '',
     updatedAt: task.updatedAt || '',
@@ -174,50 +218,157 @@ async function loadTasks() {
   const btn = $('#refreshBtn');
   btn.classList.add('spinning');
   try {
-    const tasks = await withSync(() => api.list());
-    state.tasks = tasks.map(normalize);
-    state.loaded = true;
+    await flushQueue();
+    if (!state.queue.length) {
+      const tasks = await withSync(() => api.list());
+      state.tasks = tasks.map(normalize);
+      state.loaded = true;
+      saveCache();
+    }
   } catch (err) {
-    toast(`Could not load tasks: ${err.message}`, { error: true });
+    // The banner reports this while saved tasks stay on screen.
+    if (!state.loaded) toast(`Could not load tasks: ${err.message}`, { error: true });
   } finally {
     btn.classList.remove('spinning');
     render();
   }
 }
 
-async function persist(task, isNew, prev) {
-  try {
-    const saved = normalize(await withSync(() => (isNew ? api.create(task) : api.update(task))));
-    if (state.tasks.some((t) => t.id === task.id)) {
-      dropLocal(task.id);
-      putLocal(saved);
+/* Every write takes this path: one ordered, batched request per user action.
+   If the server can't be reached, the change stays on screen and waits in a
+   saved queue. A job is { op, prev }, where prev restores the task on failure. */
+let writeChain = Promise.resolve();
+
+function inOrder(fn) {
+  const run = writeChain.then(fn, fn);
+  writeChain = run.catch(() => {});
+  return run;
+}
+
+function saveCache() {
+  if (isRemote()) storageSet(CACHE_KEY, state.tasks);
+}
+
+function saveQueue() {
+  storageSet(QUEUE_KEY, state.queue);
+  renderSync();
+}
+
+function opId(op) {
+  return op.task ? op.task.id : op.id;
+}
+
+// The server compares this with its copy, to catch edits made elsewhere.
+function stampBase(op) {
+  if (op.action !== 'update' || op.force) return;
+  const current = state.tasks.find((t) => t.id === op.task.id);
+  op.task.baseUpdatedAt = op.task.baseUpdatedAt || (current && current.updatedAt) || '';
+}
+
+// Merges with queued writes for the same task, so a later edit isn't mistaken
+// for a conflict with an earlier one that hasn't been sent yet.
+function enqueue(op) {
+  const index = state.queue.findIndex((q) => q.action !== 'delete' && opId(q) === opId(op));
+  const queued = state.queue[index];
+  if (!queued || op.action === 'create') state.queue.push(op);
+  else if (op.action === 'delete' && queued.action === 'create') state.queue.splice(index, 1);
+  else if (op.action === 'delete') state.queue[index] = op;
+  else if (queued.action === 'create') queued.task = op.task;
+  else queued.task = { ...op.task, baseUpdatedAt: queued.task.baseUpdatedAt };
+}
+
+function applyResults(jobs, results) {
+  let allOk = true;
+  results.forEach((result, i) => {
+    const { op, prev } = jobs[i];
+    const id = opId(op);
+    if (result.ok) {
+      if (result.task && state.tasks.some((t) => t.id === id)) putLocal(normalize(result.task));
+      if (result.next) putLocal(normalize(result.next));
+      return;
     }
-    return true;
-  } catch (err) {
+    allOk = false;
+    if (result.conflict) {
+      const theirs = normalize(result.conflict);
+      putLocal(theirs);
+      toast(`“${theirs.title}” was changed somewhere else, so your edit wasn't saved.`, {
+        error: true,
+        action: { label: 'Keep mine', run: () => forceSave(op.task) },
+      });
+      return;
+    }
     if (prev) putLocal(prev);
-    else dropLocal(task.id);
-    toast(`Could not save “${task.title}”: ${err.message}`, { error: true });
-    return false;
-  } finally {
-    render();
-  }
+    else if (op.action === 'create') dropLocal(id);
+    toast(`Not saved: ${result.error}`, { error: true });
+  });
+  return allOk;
+}
+
+function forceSave(task) {
+  const mine = normalize(task);
+  putLocal(mine);
+  render();
+  return send([{ op: { action: 'update', force: true, task: mine } }]);
+}
+
+function send(jobs) {
+  return inOrder(async () => {
+    try {
+      if (!isRemote()) return applyResults(jobs, jobs.map((j) => applyLocally(j.op)));
+      jobs.forEach((j) => stampBase(j.op));
+      if (state.queue.length) {
+        jobs.forEach((j) => enqueue(j.op)); // Stay behind what is already waiting.
+        return true;
+      }
+      const ops = jobs.map((j) => j.op);
+      const { results } = await withSync(() => remoteCall('batch', { ops }));
+      return applyResults(jobs, results);
+    } catch (err) {
+      if (err instanceof NetworkError) {
+        jobs.forEach((j) => enqueue(j.op));
+        state.syncError = '';
+        return true;
+      }
+      jobs.forEach(({ op, prev }) => {
+        if (prev) putLocal(prev);
+        else if (op.action === 'create') dropLocal(opId(op));
+      });
+      toast(`Not saved: ${err.message}`, { error: true });
+      return false;
+    } finally {
+      saveQueue();
+      saveCache();
+      render();
+    }
+  });
+}
+
+/** Sends queued writes. Leaves them queued if the server is still unreachable. */
+function flushQueue() {
+  return inOrder(async () => {
+    if (!state.queue.length || !isRemote()) return;
+    const ops = [...state.queue];
+    const { results } = await withSync(() => remoteCall('batch', { ops }));
+    state.queue = state.queue.slice(ops.length);
+    saveQueue();
+    applyResults(ops.map((op) => ({ op })), results);
+    saveCache();
+    toast(`Synced ${plural(ops.length, 'waiting change')}`);
+  });
 }
 
 function saveTask(task, isNew) {
   const prev = isNew ? null : state.tasks.find((t) => t.id === task.id);
   putLocal(task);
   render();
-  return persist(task, isNew, prev);
+  return send([{ op: { action: isNew ? 'create' : 'update', task: { ...task } }, prev }]);
 }
 
 async function bulkUpdate(ids, patch) {
-  const jobs = state.tasks.filter((t) => ids.has(t.id)).map((prev) => ({ prev, next: { ...prev, ...patch } }));
-  jobs.forEach((j) => putLocal(j.next));
+  const jobs = state.tasks.filter((t) => ids.has(t.id)).map((prev) => ({ prev, op: { action: 'update', task: { ...prev, ...patch } } }));
+  jobs.forEach((j) => putLocal(j.op.task));
   render();
-  // Sequential so the Apps Script lock isn't contended by a burst of writes.
-  let ok = 0;
-  for (const j of jobs) if (await persist(j.next, false, j.prev)) ok++;
-  if (ok) toast(`Updated ${ok} task${ok === 1 ? '' : 's'}`);
+  if (await send(jobs)) toast(`Updated ${plural(jobs.length, 'task')}`);
 }
 
 async function deleteTasks(ids) {
@@ -228,28 +379,16 @@ async function deleteTasks(ids) {
     state.selection.delete(t.id);
   });
   render();
-  const failed = [];
-  for (const t of removed) {
-    try {
-      await withSync(() => api.remove(t.id));
-    } catch {
-      failed.push(t);
-    }
-  }
-  if (failed.length) {
-    failed.forEach(putLocal);
-    render();
-    toast(`Could not delete ${failed.length} task${failed.length === 1 ? '' : 's'}`, { error: true });
-  }
-  const deleted = removed.filter((t) => !failed.includes(t));
-  if (deleted.length) {
-    const msg = deleted.length === 1 ? `Deleted “${deleted[0].title}”` : `Deleted ${deleted.length} tasks`;
-    toast(msg, { action: { label: 'Undo', run: () => restoreTasks(deleted) } });
-  }
+  const ok = await send(removed.map((t) => ({ prev: t, op: { action: 'delete', id: t.id } })));
+  if (!ok) return;
+  const msg = removed.length === 1 ? `Deleted “${removed[0].title}”` : `Deleted ${removed.length} tasks`;
+  toast(msg, { action: { label: 'Undo', run: () => restoreTasks(removed) } });
 }
 
 async function restoreTasks(tasks) {
-  for (const t of tasks) await saveTask(t, true);
+  tasks.forEach(putLocal);
+  render();
+  await send(tasks.map((task) => ({ op: { action: 'create', task: { ...task } } })));
   toast(tasks.length === 1 ? 'Task restored' : `${tasks.length} tasks restored`);
 }
 
@@ -335,10 +474,10 @@ function fullTime(iso) {
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 }
 
-// Completion date is approximated by the last update of a done task.
+// Tasks finished before completedAt existed fall back to their last update.
 function completedOn(t) {
-  if (t.status !== 'done' || !t.updatedAt) return '';
-  const d = new Date(t.updatedAt);
+  if (t.status !== 'done' || !(t.completedAt || t.updatedAt)) return '';
+  const d = new Date(t.completedAt || t.updatedAt);
   return Number.isNaN(d.getTime()) ? '' : localDate(d);
 }
 
@@ -352,6 +491,9 @@ const projectHtml = (p) => (p ? `<span class="tag" title="${esc(p)}">${icon('fol
 
 const tagList = (t) => t.tags.split(',').map((x) => x.trim()).filter(Boolean);
 const linkList = (t) => t.links.split('\n').map((x) => x.trim()).filter((x) => /^https?:\/\//i.test(x));
+const parseChecklist = (text) =>
+  text.split('\n').map((line) => /^\[( |x)\]\s*(.*)$/i.exec(line.trim())).filter(Boolean).map((m) => ({ done: m[1].toLowerCase() === 'x', text: m[2] }));
+const formatChecklist = (items) => items.map((i) => `[${i.done ? 'x' : ' '}] ${i.text}`).join('\n');
 const tagsHtml = (t) => tagList(t).map((x) => `<span class="tag label">${esc(x)}</span>`).join('');
 
 function allTags() {
@@ -539,6 +681,9 @@ function renderSync() {
   if (state.pending) {
     el.classList.add('saving');
     el.textContent = 'Syncing…';
+  } else if (state.queue.length) {
+    el.classList.add('saving');
+    el.textContent = `${plural(state.queue.length, 'change')} waiting to sync`;
   } else if (state.syncError) {
     el.classList.add('error');
     el.textContent = 'Sync error';
@@ -629,6 +774,7 @@ function cardHtml(t) {
   const done = t.status === 'done';
   const top = projectHtml(t.project) + tagsHtml(t);
   const links = linkList(t).length;
+  const steps = parseChecklist(t.checklist);
   return `
     <article class="card ${done ? 'is-done' : ''}" draggable="true" tabindex="0" data-id="${esc(t.id)}">
       ${top ? `<div class="card-top">${top}</div>` : ''}
@@ -641,6 +787,8 @@ function cardHtml(t) {
         ${priorityHtml(t.priority)}
         ${dueHtml(t)}
         ${links ? `<span class="attach" title="${plural(links, 'link')}">${icon('link')}${links}</span>` : ''}
+        ${steps.length ? `<span class="attach" title="Checklist">${icon('checklist')}${steps.filter((x) => x.done).length}/${steps.length}</span>` : ''}
+        ${t.recurrence ? `<span class="attach" title="Repeats ${esc(t.recurrence)}">${icon('repeat')}</span>` : ''}
         <span class="updated" title="Updated ${esc(fullTime(t.updatedAt))}">${esc(relTime(t.updatedAt))}</span>
       </div>
     </article>`;
@@ -910,12 +1058,33 @@ function recentListHtml() {
 const drawer = $('#drawer');
 const taskForm = $('#taskForm');
 let editingId = null;
+let draftChecklist = [];
+
+function renderChecklist() {
+  const done = draftChecklist.filter((i) => i.done).length;
+  $('#checkProgress').textContent = draftChecklist.length ? `${done} of ${draftChecklist.length}` : '';
+  $('#checkItems').innerHTML = draftChecklist
+    .map((item, i) => `<li class="${item.done ? 'done' : ''}">
+      <label><input type="checkbox" class="checkbox" data-check="${i}" ${item.done ? 'checked' : ''}><span>${esc(item.text)}</span></label>
+      <button type="button" class="icon-btn ghost" data-check-remove="${i}" aria-label="Remove step">${icon('x')}</button></li>`)
+    .join('');
+}
+
+function addChecklistItem() {
+  const input = $('#checkAdd');
+  const text = input.value.trim();
+  if (!text) return;
+  draftChecklist.push({ done: false, text });
+  input.value = '';
+  renderChecklist();
+  input.focus();
+}
 
 function openTaskDrawer(task = null, defaults = {}) {
   editingId = task ? task.id : null;
   const data = task || { title: '', description: '', status: 'todo', priority: 'medium', project: '', dueDate: '', ...routeDefaults(), ...defaults };
   $('#drawerLabel').textContent = task ? 'Task details' : 'New task';
-  for (const name of ['title', 'description', 'status', 'priority', 'project', 'dueDate', 'tags', 'links']) {
+  for (const name of ['title', 'description', 'status', 'priority', 'project', 'dueDate', 'tags', 'links', 'recurrence']) {
     taskForm.elements[name].value = data[name] || '';
   }
   $('#deleteTaskBtn').hidden = !task;
@@ -928,10 +1097,29 @@ function openTaskDrawer(task = null, defaults = {}) {
   $('#taskLinks').innerHTML = task
     ? linkList(task).map((url) => `<li><a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${icon('link')}${esc(url)}</a></li>`).join('')
     : '';
+  draftChecklist = parseChecklist(data.checklist || '');
+  renderChecklist();
   loadHistory(task);
   if (!drawer.open) drawer.showModal();
   taskForm.elements.title.focus();
 }
+
+$('#checkAddBtn').addEventListener('click', addChecklistItem);
+$('#checkAdd').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' || e.ctrlKey || e.metaKey) return;
+  e.preventDefault(); // Enter here adds a step rather than saving the task.
+  addChecklistItem();
+});
+$('#checkItems').addEventListener('click', (e) => {
+  const remove = e.target.closest('[data-check-remove]');
+  if (remove) {
+    draftChecklist.splice(Number(remove.dataset.checkRemove), 1);
+    renderChecklist();
+  } else if (e.target.dataset.check !== undefined) {
+    draftChecklist[Number(e.target.dataset.check)].done = e.target.checked;
+    renderChecklist();
+  }
+});
 
 async function loadHistory(task) {
   const section = $('#taskHistory');
@@ -962,6 +1150,8 @@ taskForm.addEventListener('submit', (e) => {
     priority: f.priority.value,
     project: f.project.value.trim(),
     dueDate: f.dueDate.value,
+    recurrence: f.recurrence.value,
+    checklist: formatChecklist(draftChecklist),
     tags: f.tags.value.split(',').map((x) => x.trim()).filter(Boolean).join(', '),
     links: f.links.value.split('\n').map((x) => x.trim()).filter((x) => /^https?:\/\//i.test(x)).join('\n'),
   };
@@ -1048,6 +1238,9 @@ settingsForm.addEventListener('submit', (e) => {
   }
   state.config = config;
   storageSet(CONFIG_KEY, config);
+  storageSet(CACHE_KEY, []);
+  state.queue = [];
+  saveQueue();
   settingsDialog.close();
   state.loaded = false;
   state.tasks = [];
@@ -1057,6 +1250,9 @@ settingsForm.addEventListener('submit', (e) => {
 $('#disconnectBtn').addEventListener('click', () => {
   state.config = { url: '', token: '' };
   storageSet(CONFIG_KEY, state.config);
+  storageSet(CACHE_KEY, []);
+  state.queue = [];
+  saveQueue();
   state.syncError = '';
   settingsDialog.close();
   loadTasks();
@@ -1381,9 +1577,7 @@ function moveCard(id, status, beforeId) {
   }));
   jobs.forEach((j) => putLocal(j.next));
   render();
-  (async () => {
-    for (const j of jobs) await persist(j.next, false, j.prev);
-  })();
+  send(jobs.map((j) => ({ prev: j.prev, op: { action: 'update', task: j.next } })));
 }
 
 /* ---------- Chart tooltips ---------- */
@@ -1526,6 +1720,9 @@ document.addEventListener('keydown', (e) => {
     render();
   }
 });
+
+// Send anything that was waiting as soon as the connection returns.
+window.addEventListener('online', loadTasks);
 
 // Pick up edits made directly in the sheet (or on another device) when returning to the tab.
 document.addEventListener('visibilitychange', () => {

@@ -12,6 +12,19 @@ void showMessage(String message) {
     ..showSnackBar(SnackBar(content: Text(message)));
 }
 
+void showAction(String message, String label, VoidCallback onPressed) {
+  messengerKey.currentState
+    ?..hideCurrentSnackBar()
+    ..showSnackBar(
+      SnackBar(
+        content: Text(message),
+        duration: const Duration(seconds: 8),
+        persist: false,
+        action: SnackBarAction(label: label, onPressed: onPressed),
+      ),
+    );
+}
+
 /// Chart and status identity colors, stepped separately for each theme.
 Color statusColor(BuildContext context, TaskStatus status) {
   final dark = Theme.of(context).brightness == Brightness.dark;
@@ -57,16 +70,7 @@ Future<void> openEditor(BuildContext context, {Task? task, String dueDate = ''})
 /// Deletes [task] and offers an undo.
 void deleteWithUndo(TaskStore store, Task task) {
   store.remove(task);
-  messengerKey.currentState
-    ?..hideCurrentSnackBar()
-    ..showSnackBar(
-      SnackBar(
-        content: Text('Deleted "${task.title}"'),
-        duration: const Duration(seconds: 5),
-        persist: false,
-        action: SnackBarAction(label: 'Undo', onPressed: () => store.add(task)),
-      ),
-    );
+  showAction('Deleted "${task.title}"', 'Undo', () => store.add(task));
 }
 
 class TaskTile extends StatelessWidget {
@@ -144,6 +148,13 @@ class TaskTile extends StatelessWidget {
                 _Meta(icon: Icons.sell_outlined, label: task.tagList.join(', ')),
               if (task.linkList.isNotEmpty)
                 _Meta(icon: Icons.link, label: '${task.linkList.length}'),
+              if (task.steps.isNotEmpty)
+                _Meta(
+                  icon: Icons.checklist,
+                  label: '${task.steps.where((s) => s.done).length}/${task.steps.length}',
+                ),
+              if (task.recurrence.isNotEmpty)
+                _Meta(icon: Icons.repeat, label: recurrenceLabels[task.recurrence]!),
             ],
           ),
         ),
@@ -247,7 +258,8 @@ class SyncErrorBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final store = StoreScope.of(context);
     final error = store.syncError;
-    if (error == null) return const SizedBox.shrink();
+    final waiting = store.queue.length;
+    if (error == null && waiting == 0) return const SizedBox.shrink();
     final scheme = Theme.of(context).colorScheme;
     return Material(
       color: scheme.errorContainer,
@@ -261,7 +273,9 @@ class SyncErrorBar extends StatelessWidget {
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
-                  'Showing saved tasks. $error Tap to retry.',
+                  waiting > 0
+                      ? '$waiting change${waiting == 1 ? '' : 's'} waiting to sync. Tap to retry.'
+                      : 'Showing saved tasks. $error Tap to retry.',
                   style: TextStyle(color: scheme.onErrorContainer, fontSize: 13),
                 ),
               ),
