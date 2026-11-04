@@ -46,12 +46,17 @@ const isRemote = () => Boolean(state.config.url && state.config.token);
 
 /* ---------- API ---------- */
 async function remoteCall(action, payload = {}, config = state.config) {
-  const res = await fetch(config.url, {
-    method: 'POST',
-    // text/plain keeps this a CORS "simple request", so Apps Script needs no preflight.
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({ action, token: config.token, ...payload }),
-  });
+  let res;
+  try {
+    res = await fetch(config.url, {
+      method: 'POST',
+      // text/plain keeps this a CORS "simple request", so Apps Script needs no preflight.
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action, token: config.token, ...payload }),
+    });
+  } catch {
+    throw new Error('Could not reach the web app. Check the URL ends in /exec and that you are online.');
+  }
   if (!res.ok) throw new Error(`Server responded ${res.status}`);
   let data;
   try {
@@ -229,6 +234,8 @@ function render() {
   renderStats();
   renderProjects();
   $('#setupBanner').hidden = isRemote();
+  $('#errorBanner').hidden = !state.syncError;
+  $('#errorText').textContent = state.syncError ? `Sync error: ${state.syncError}` : '';
   $$('.segmented button').forEach((b) => {
     const active = b.dataset.view === state.prefs.view;
     b.classList.toggle('active', active);
@@ -277,7 +284,7 @@ function renderProjects() {
 }
 
 function boardHtml(tasks) {
-  const emptyText = state.loaded || !isRemote() ? 'No tasks' : 'Loading…';
+  const emptyText = state.loaded || !isRemote() ? 'No tasks' : state.syncError ? 'Could not load tasks' : 'Loading…';
   return `<div class="board">${STATUSES.map((s) => {
     const items = tasks.filter((t) => t.status === s.id);
     return `
@@ -412,7 +419,11 @@ function setSettingsStatus(text, kind = '') {
 }
 
 function readSettingsForm() {
-  return { url: settingsForm.elements.url.value.trim(), token: settingsForm.elements.token.value.trim() };
+  return {
+    url: settingsForm.elements.url.value.trim(),
+    // Tolerate pasting the whole "API token: ..." line from the Apps Script log.
+    token: settingsForm.elements.token.value.replace(/^\s*(info\s+)?api token:\s*/i, '').trim(),
+  };
 }
 
 $('#testBtn').addEventListener('click', async () => {
@@ -533,6 +544,8 @@ $('#newTaskBtn').addEventListener('click', () => openTaskDialog());
 $('#refreshBtn').addEventListener('click', loadTasks);
 $('#settingsBtn').addEventListener('click', openSettings);
 $('#bannerConnectBtn').addEventListener('click', openSettings);
+$('#errorSettingsBtn').addEventListener('click', openSettings);
+$('#errorRetryBtn').addEventListener('click', loadTasks);
 
 document.addEventListener('keydown', (e) => {
   const typing = e.target.closest('input, textarea, select, [contenteditable]');
