@@ -3,7 +3,9 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 
 import '../services/api.dart';
+import '../services/setup_link.dart';
 import '../services/store.dart';
+import 'scan_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -66,6 +68,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (mounted) setState(() => _busy = false);
   }
 
+  // Fills in the form rather than connecting straight away, so a code from
+  // someone else can't redirect your tasks without you seeing it.
+  Future<void> _scan() async {
+    final link = await Navigator.of(context).push<SetupLink>(
+      MaterialPageRoute(builder: (_) => const ScanScreen()),
+    );
+    if (link == null || !mounted) return;
+    _url.text = link.url;
+    _token.text = link.token;
+    _setStatus('QR code read. Tap Connect to finish.');
+  }
+
   Future<void> _disconnect() async {
     final store = StoreScope.of(context);
     final confirmed = await showDialog<bool>(
@@ -126,11 +140,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ] else ...[
               Text(
-                'Enter the Apps Script web app URL and the API token printed by setup(). '
+                'On a connected computer, open Connection settings on the website and show the QR code. '
                 'The token is kept in encrypted storage on this phone.',
                 style: text.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
               ),
               const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: _busy ? null : _scan,
+                icon: const Icon(Icons.qr_code_scanner),
+                label: const Text('Scan QR code'),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Or enter them yourself',
+                textAlign: TextAlign.center,
+                style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+              ),
+              const SizedBox(height: 12),
               TextField(
                 controller: _url,
                 keyboardType: TextInputType.url,
@@ -158,7 +184,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ),
               const SizedBox(height: 16),
-              FilledButton(
+              OutlinedButton(
                 onPressed: _busy ? null : _connect,
                 child: Text(_busy ? 'Connecting…' : 'Connect'),
               ),

@@ -16,7 +16,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
-  <link rel="stylesheet" href="styles.css?v=8">
+  <link rel="stylesheet" href="styles.css?v=9">
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -284,11 +284,35 @@
         <input name="token" class="input" type="password" autocomplete="off">
       </label>
       <p id="settingsStatus" class="settings-status"></p>
+      <div id="qrSection" class="qr-section" hidden>
+        <button type="button" id="qrBtn" class="btn">Show QR code for another device</button>
+        <div id="qrBox" hidden>
+          <div id="qrCode" class="qr-code"></div>
+          <p class="muted">Scan with the TaskBoard app, or your phone's camera to open this site connected.
+            <strong>Anyone who scans this can read and change your tasks,</strong> so don't share or screenshot it.</p>
+          <button type="button" id="copyLinkBtn" class="btn small">Copy setup link</button>
+        </div>
+      </div>
       <div class="modal-foot">
         <button type="button" id="disconnectBtn" class="btn ghost">Use local mode</button>
         <span class="spacer"></span>
         <button type="button" id="testBtn" class="btn">Test connection</button>
         <button type="submit" class="btn primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="connectDialog" class="modal" aria-labelledby="connectTitle">
+    <form id="connectForm" method="dialog">
+      <div class="modal-head">
+        <h2 id="connectTitle">Connect to this Google Sheet?</h2>
+      </div>
+      <p class="muted">Only continue if this is your own setup link. TaskBoard will send your tasks to this script:</p>
+      <p><code id="connectScript"></code></p>
+      <div class="modal-foot">
+        <span class="spacer"></span>
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn primary">Connect</button>
       </div>
     </form>
   </dialog>
@@ -324,6 +348,7 @@
   <div id="tooltip" class="tooltip" role="tooltip"></div>
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
-  <script src="app.js?v=8"></script>
+  <script src="vendor/qrcode.js"></script>
+  <script src="app.js?v=9"></script>
 </body>
 </html>

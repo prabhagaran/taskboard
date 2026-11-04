@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:taskboard/models/task.dart';
 import 'package:taskboard/services/api.dart';
+import 'package:taskboard/services/setup_link.dart';
 
 void main() {
   group('Task', () {
@@ -86,6 +87,28 @@ void main() {
       const older = Task(id: 'b', title: 'x', status: TaskStatus.done, updatedAt: '2026-09-09T10:00:00');
       expect(completedOn(finished), '2026-03-02');
       expect(completedOn(older), '2026-09-09');
+    });
+  });
+
+  group('SetupLink', () {
+    const id = 'AKfycbExampleScriptId_123-abcdefgh';
+    const token = 'abcdef0123456789abcdef0123456789';
+
+    test('reads a setup link', () {
+      final link = SetupLink.parse('https://prabhagaran.github.io/taskboard/#connect=$id.$token')!;
+      expect(link.url, 'https://script.google.com/macros/s/$id/exec');
+      expect(link.token, token);
+    });
+
+    test('always points at Google, whatever the code says', () {
+      final link = SetupLink.parse('https://evil.example/#connect=$id.$token')!;
+      expect(Uri.parse(link.url).host, 'script.google.com');
+    });
+
+    test('rejects anything else', () {
+      expect(SetupLink.parse('https://example.com/'), isNull);
+      expect(SetupLink.parse('#connect=short.short'), isNull);
+      expect(SetupLink.parse('#connect=$id.$token/../x'), isNull);
     });
   });
 

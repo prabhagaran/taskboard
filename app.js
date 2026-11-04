@@ -519,6 +519,7 @@ function go(route) {
   location.hash = routeHash(route);
 }
 window.addEventListener('hashchange', () => {
+  if (handleConnectLink()) return;
   state.route = parseRoute();
   state.selection.clear();
   state.quickAdd = null;
@@ -1198,7 +1199,19 @@ function openSettings() {
   settingsForm.elements.url.value = state.config.url;
   settingsForm.elements.token.value = state.config.token;
   setSettingsStatus('');
+  $('#qrSection').hidden = !setupLink();
   settingsDialog.showModal();
+}
+
+function connectTo(config) {
+  state.config = config;
+  storageSet(CONFIG_KEY, config);
+  storageSet(CACHE_KEY, []);
+  state.queue = [];
+  saveQueue();
+  state.loaded = false;
+  state.tasks = [];
+  loadTasks();
 }
 
 function setSettingsStatus(text, kind = '') {
@@ -1234,15 +1247,77 @@ settingsForm.addEventListener('submit', (e) => {
   if (!/^https:\/\/script\.google(usercontent)?\.com\//.test(config.url)) {
     return setSettingsStatus('URL should start with https://script.google.com/', 'error');
   }
-  state.config = config;
-  storageSet(CONFIG_KEY, config);
-  storageSet(CACHE_KEY, []);
-  state.queue = [];
-  saveQueue();
   settingsDialog.close();
-  state.loaded = false;
-  state.tasks = [];
-  loadTasks();
+  connectTo(config);
+});
+
+
+/* ---------- QR setup ----------
+   Setup links carry the script id and token after the #, which browsers never
+   send to a server. */
+const SCRIPT_URL = /^https:\/\/script\.google\.com\/macros\/s\/([\w-]+)\/exec$/;
+const CONNECT_LINK = /^#connect=([\w-]{20,120})\.([\w-]{16,128})$/;
+
+function setupLink() {
+  const match = SCRIPT_URL.exec(state.config.url);
+  if (!match || !state.config.token) return '';
+  return `${location.origin}${location.pathname}#connect=${match[1]}.${state.config.token}`;
+}
+
+function hideQr() {
+  $('#qrBox').hidden = true;
+  $('#qrCode').innerHTML = ''; // The code holds the token, so don't leave it around.
+  $('#qrBtn').textContent = 'Show QR code for another device';
+}
+
+$('#qrBtn').addEventListener('click', () => {
+  if (!$('#qrBox').hidden) return hideQr();
+  const qr = qrcode(0, 'M');
+  qr.addData(setupLink());
+  qr.make();
+  $('#qrCode').innerHTML = qr.createSvgTag(4, 16);
+  $('#qrBox').hidden = false;
+  $('#qrBtn').textContent = 'Hide QR code';
+});
+
+$('#copyLinkBtn').addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(setupLink());
+    toast('Setup link copied. Keep it private.');
+  } catch {
+    toast('Could not copy the link.', { error: true });
+  }
+});
+
+settingsDialog.addEventListener('close', hideQr);
+
+let pendingConnect = null;
+const connectDialog = $('#connectDialog');
+
+/** Takes a setup link out of the address bar and asks before using it. */
+function handleConnectLink() {
+  if (!location.hash.startsWith('#connect=')) return false;
+  const match = CONNECT_LINK.exec(location.hash);
+  // Replacing the entry keeps the token out of the browser's history.
+  history.replaceState(null, '', location.pathname + location.search);
+  state.route = parseRoute();
+  if (!match) {
+    toast('That setup link is not valid.', { error: true });
+    return true;
+  }
+  pendingConnect = { url: `https://script.google.com/macros/s/${match[1]}/exec`, token: match[2] };
+  $('#connectScript').textContent = pendingConnect.url;
+  connectDialog.showModal();
+  return true;
+}
+
+$('#connectForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  connectDialog.close();
+  if (pendingConnect) connectTo(pendingConnect);
+});
+connectDialog.addEventListener('close', () => {
+  pendingConnect = null;
 });
 
 $('#disconnectBtn').addEventListener('click', () => {
@@ -1765,5 +1840,6 @@ new MutationObserver(() => {
   if (all) all.indeterminate = all.dataset.indeterminate === 'true';
 }).observe(main, { childList: true });
 
+handleConnectLink();
 render();
 loadTasks();

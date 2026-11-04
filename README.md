@@ -67,8 +67,9 @@ Your app will be live at `https://<your-username>.github.io/taskboard/` within a
 
 ## 3. Connect
 
-Open the site, click the **gear icon** (or *Connect Google Sheet*), paste the **Web app URL** and **API token**, click **Test**, then **Save**.
-Repeat this once on each browser or device you use.
+Open the site, click **Connection settings** (or *Connect Google Sheet*), paste the **Web app URL** and **API token**, click **Test connection**, then **Save**.
+
+To add another device, open **Connection settings** on one that's connected and click **Show QR code for another device**. Scan it with the Android app (**Scan QR code**), or with a phone's camera to open the site already connected. Anyone who scans the code can read and change your tasks, so keep it private. If it's ever exposed, run `rotateToken` in Apps Script.
 
 ## Android app
 
