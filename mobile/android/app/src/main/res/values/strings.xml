@@ -1,4 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="widget_description">Tasks due today</string>
+    <string name="widget_description">All open tasks</string>
 </resources>

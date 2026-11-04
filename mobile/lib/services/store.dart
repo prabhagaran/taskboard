@@ -20,7 +20,6 @@ const _filtersKey = 'savedFilters';
 const _queueKey = 'queue';
 const _remindersKey = 'reminders';
 const _widgetProvider = 'TaskBoardWidget';
-const _widgetLines = 6;
 
 /// A write to send, and what to restore if the server refuses it.
 class _Job {
@@ -390,21 +389,13 @@ class TaskStore extends ChangeNotifier {
     if (remindersOn) _reminders.schedule(tasks).catchError((_) {});
   }
 
-  /// Sends the open tasks due today or earlier to the home-screen widget.
+  /// Sends every open task to the home-screen widget, one title per line.
   Future<void> _updateWidget() async {
-    final today = todayKey();
-    final due = tasks
-        .where((t) => t.isOpen && t.dueDate.isNotEmpty && t.dueDate.compareTo(today) <= 0)
-        .toList()
-      ..sort(compareTasks);
-    final lines = due.take(_widgetLines).map((t) => '• ${t.title}').toList();
-    if (due.length > _widgetLines) lines.add('+${due.length - _widgetLines} more');
+    final open = tasks.where((t) => t.isOpen).toList()..sort(compareTasks);
+    final lines = open.map((t) => '• ${t.title.replaceAll(RegExp(r'\s+'), ' ')}');
     try {
-      await HomeWidget.saveWidgetData<String>('title', 'Today · ${due.length}');
-      await HomeWidget.saveWidgetData<String>(
-        'lines',
-        lines.isEmpty ? 'Nothing due today' : lines.join('\n'),
-      );
+      await HomeWidget.saveWidgetData<String>('title', 'To Do · ${open.length}');
+      await HomeWidget.saveWidgetData<String>('lines', lines.join('\n'));
       await HomeWidget.updateWidget(androidName: _widgetProvider);
     } catch (_) {
       // The widget is optional; a failure here must never affect saving.
