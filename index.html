@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TaskBoard</title>
+  <meta name="description" content="Personal task tracker backed by Google Sheets">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect width='24' height='24' rx='6' fill='%234f46e5'/><path d='M7 12.5l3 3 7-7' stroke='white' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M7 12.5l3 3 7-7"/></svg>
+      </span>
+      <span>TaskBoard</span>
+    </div>
+    <div id="sync" class="sync" aria-live="polite"></div>
+    <div class="top-actions">
+      <button id="refreshBtn" class="icon-btn" title="Refresh" aria-label="Refresh">
+        <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>
+      </button>
+      <button id="settingsBtn" class="icon-btn" title="Settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      </button>
+      <button id="newTaskBtn" class="btn primary" title="New task (N)">
+        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+        <span>New task</span>
+      </button>
+    </div>
+  </header>
+
+  <div id="setupBanner" class="banner" hidden>
+    <span><strong>Local mode:</strong> tasks are saved in this browser only.</span>
+    <button id="bannerConnectBtn" class="btn small">Connect Google Sheet</button>
+  </div>
+
+  <section class="toolbar">
+    <div id="stats" class="stats"></div>
+    <div class="filters">
+      <input id="search" type="search" placeholder="Search tasks  ( / )" aria-label="Search tasks">
+      <select id="projectFilter" aria-label="Filter by project"></select>
+      <select id="priorityFilter" aria-label="Filter by priority">
+        <option value="">All priorities</option>
+        <option value="high">High</option>
+        <option value="medium">Medium</option>
+        <option value="low">Low</option>
+      </select>
+      <label class="check"><input id="hideDone" type="checkbox"> Hide done</label>
+      <div class="segmented" role="tablist" aria-label="View">
+        <button data-view="board" role="tab">Board</button>
+        <button data-view="list" role="tab">List</button>
+      </div>
+    </div>
+  </section>
+
+  <main id="main"></main>
+
+  <dialog id="taskDialog">
+    <form id="taskForm" method="dialog">
+      <h2 id="taskDialogTitle">New task</h2>
+      <label>Title
+        <input name="title" required maxlength="500" autocomplete="off">
+      </label>
+      <label>Description
+        <textarea name="description" rows="4"></textarea>
+      </label>
+      <div class="grid2">
+        <label>Status
+          <select name="status">
+            <option value="todo">To Do</option>
+            <option value="inprogress">In Progress</option>
+            <option value="done">Done</option>
+          </select>
+        </label>
+        <label>Priority
+          <select name="priority">
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+          </select>
+        </label>
+        <label>Project
+          <input name="project" list="projectList" autocomplete="off">
+        </label>
+        <label>Due date
+          <input name="dueDate" type="date">
+        </label>
+      </div>
+      <datalist id="projectList"></datalist>
+      <p id="taskMeta" class="muted small"></p>
+      <div class="dialog-actions">
+        <button type="button" id="deleteTaskBtn" class="btn danger">Delete</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="settingsDialog">
+    <form id="settingsForm" method="dialog">
+      <h2>Connect Google Sheet</h2>
+      <p class="muted small">Paste the Apps Script web app URL and the API token from <code>setup()</code>.
+        Both are stored only in this browser. See the README for setup steps.</p>
+      <label>Web app URL
+        <input name="url" type="url" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="off">
+      </label>
+      <label>API token
+        <input name="token" type="password" autocomplete="off">
+      </label>
+      <p id="settingsStatus" class="small"></p>
+      <div class="dialog-actions">
+        <button type="button" id="disconnectBtn" class="btn">Use local mode</button>
+        <span class="spacer"></span>
+        <button type="button" id="testBtn" class="btn">Test</button>
+        <button type="submit" class="btn primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
