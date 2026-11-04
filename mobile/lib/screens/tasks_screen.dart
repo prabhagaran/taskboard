@@ -4,8 +4,8 @@ import '../models/task.dart';
 import '../services/store.dart';
 import '../widgets/common.dart';
 
-/// Width at which the three status lists fit side by side.
-const _boardWidth = 900.0;
+/// Width at which the two status lists fit side by side.
+const _boardWidth = 700.0;
 
 class TasksScreen extends StatefulWidget {
   const TasksScreen({super.key});

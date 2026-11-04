@@ -5,11 +5,10 @@
    ========================================================================== */
 const STATUSES = [
   { id: 'todo', label: 'To Do' },
-  { id: 'inprogress', label: 'In Progress' },
   { id: 'done', label: 'Done' },
 ];
 const STATUS_LABEL = Object.fromEntries(STATUSES.map((s) => [s.id, s.label]));
-const STATUS_RANK = { todo: 0, inprogress: 1, done: 2 };
+const STATUS_RANK = { todo: 0, done: 1 };
 const PRIORITIES = { high: 'High', medium: 'Medium', low: 'Low' };
 const PRIORITY_RANK = { high: 0, medium: 1, low: 2 };
 
@@ -897,7 +896,6 @@ function dashboardHtml() {
   const dueToday = open.filter((t) => t.dueDate === today);
   const weekStart = addDays(-6);
   const doneWeek = state.tasks.filter((t) => completedOn(t) >= weekStart);
-  const inProgress = open.filter((t) => t.status === 'inprogress');
   const dateLabel = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
 
   const kpi = (scope, iconName, label, value, sub) =>
@@ -907,7 +905,7 @@ function dashboardHtml() {
   return `
     <div class="dash">
       <div class="dash-intro"><h2>Overview</h2><span>${esc(dateLabel)}</span></div>
-      ${kpi('all', 'inbox', 'Open tasks', open.length, `<span class="kpi-sub">${plural(inProgress.length, 'task')} in progress</span>`)}
+      ${kpi('all', 'inbox', 'Open tasks', open.length, `<span class="kpi-sub">${open.filter((t) => t.dueDate).length} with a due date</span>`)}
       ${kpi('today', 'today', 'Due today', dueToday.length, `<span class="kpi-sub">${open.filter((t) => t.dueDate > today && t.dueDate <= addDays(7)).length} more in the next 7 days</span>`)}
       ${kpi('overdue', 'alert', 'Overdue', overdue.length, overdue.length
         ? `<span class="kpi-sub critical">${icon('alert')}Needs attention</span>`
@@ -944,7 +942,7 @@ function dashboardHtml() {
     </div>`;
 }
 
-const statusVar = (s) => ({ todo: '--s-todo', inprogress: '--s-progress', done: '--s-done' })[s];
+const statusVar = (s) => ({ todo: '--s-todo', done: '--s-done' })[s];
 
 function completionChartHtml() {
   const days = Array.from({ length: 14 }, (_, i) => addDays(i - 13));
@@ -1002,7 +1000,7 @@ function projectChartHtml() {
   const groups = new Map();
   state.tasks.forEach((t) => {
     const key = t.project || '';
-    if (!groups.has(key)) groups.set(key, { todo: 0, inprogress: 0, done: 0, total: 0 });
+    if (!groups.has(key)) groups.set(key, { todo: 0, done: 0, total: 0 });
     const g = groups.get(key);
     g[t.status]++;
     g.total++;
@@ -1010,9 +1008,9 @@ function projectChartHtml() {
   let rows = [...groups.entries()].sort((a, b) => b[1].total - a[1].total);
   // Keep the chart readable: fold the long tail into "Other".
   if (rows.length > 8) {
-    const other = { todo: 0, inprogress: 0, done: 0, total: 0, other: true };
+    const other = { todo: 0, done: 0, total: 0, other: true };
     rows.slice(7).forEach(([, g]) => STATUSES.forEach((s) => (other[s.id] += g[s.id])));
-    other.total = other.todo + other.inprogress + other.done;
+    other.total = other.todo + other.done;
     rows = [...rows.slice(0, 7), ['Other projects', other]];
   }
   const max = Math.max(...rows.map(([, g]) => g.total));

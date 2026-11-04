@@ -30,7 +30,6 @@ Color statusColor(BuildContext context, TaskStatus status) {
   final dark = Theme.of(context).brightness == Brightness.dark;
   return switch (status) {
     TaskStatus.todo => dark ? const Color(0xFF3987E5) : const Color(0xFF2A78D6),
-    TaskStatus.inprogress => dark ? const Color(0xFFD95926) : const Color(0xFFEB6834),
     TaskStatus.done => dark ? const Color(0xFF199E70) : const Color(0xFF1BAF7A),
   };
 }

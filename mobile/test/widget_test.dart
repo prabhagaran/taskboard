@@ -12,7 +12,7 @@ void main() {
       const task = Task(
         id: 'a',
         title: 'Ship',
-        status: TaskStatus.inprogress,
+        status: TaskStatus.done,
         priority: TaskPriority.high,
         project: 'Alpha',
         dueDate: '2026-11-10',
@@ -28,6 +28,10 @@ void main() {
       expect(task.status, TaskStatus.todo);
       expect(task.priority, TaskPriority.medium);
       expect(task.dueDate, '');
+    });
+
+    test('shows tasks from the old In Progress status as To Do', () {
+      expect(Task.fromJson({'id': 'a', 'title': 'x', 'status': 'inprogress'}).status, TaskStatus.todo);
     });
 
     test('is overdue only while open and past due', () {

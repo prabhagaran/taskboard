@@ -16,7 +16,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
-  <link rel="stylesheet" href="styles.css?v=7">
+  <link rel="stylesheet" href="styles.css?v=8">
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -167,7 +167,6 @@
         <select class="select small" id="bulkStatus" aria-label="Set status">
           <option value="">Set status…</option>
           <option value="todo">To Do</option>
-          <option value="inprogress">In Progress</option>
           <option value="done">Done</option>
         </select>
         <select class="select small" id="bulkPriority" aria-label="Set priority">
@@ -201,7 +200,6 @@
             <span class="prop-label"><svg class="i"><use href="#i-status"/></svg>Status</span>
             <select name="status" class="select">
               <option value="todo">To Do</option>
-              <option value="inprogress">In Progress</option>
               <option value="done">Done</option>
             </select>
           </label>
@@ -326,6 +324,6 @@
   <div id="tooltip" class="tooltip" role="tooltip"></div>
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
-  <script src="app.js?v=7"></script>
+  <script src="app.js?v=8"></script>
 </body>
 </html>

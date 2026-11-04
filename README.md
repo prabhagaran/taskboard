@@ -4,7 +4,7 @@ A lightweight personal task manager. The frontend is a static site (hosted free 
 
 - **Workspace layout:** sidebar with smart lists (Today, Next 7 days, Overdue, Completed) and projects, with live counts
 - **Dashboard:** KPI tiles, completions per day, open work by priority, workload by project, upcoming deadlines, recent activity
-- **Board:** drag and drop between To Do, In Progress and Done, plus inline quick-add in each column
+- **Board:** drag and drop between To Do and Done, plus inline quick-add in each column
 - **Table:** sortable columns, multi-select, and bulk actions (mark done, set status or priority, delete)
 - **Task panel:** a side drawer with every field, timestamps, duplicate and delete (with undo)
 - **Calendar:** month view of due dates, plus one-way sync into a separate Google Calendar
@@ -91,7 +91,7 @@ Copy the APK to your phone, open it, and allow installs from that source. On fir
 
 Older sheets gain any missing columns automatically the first time a new script runs.
 
-- `status`: `todo`, `inprogress`, `done`
+- `status`: `todo` or `done` (anything else shows as To Do)
 - `priority`: `low`, `medium`, `high`
 - `dueDate`: `YYYY-MM-DD`
 - `tags`: comma-separated

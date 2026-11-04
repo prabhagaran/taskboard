@@ -1,7 +1,6 @@
 /// Wire values match the Google Sheet columns, so `.name` is sent as-is.
 enum TaskStatus {
   todo('To Do'),
-  inprogress('In Progress'),
   done('Done');
 
   const TaskStatus(this.label);
