@@ -2,12 +2,16 @@
 
 A lightweight personal task manager. The frontend is a static site (hosted free on GitHub Pages); the backend is a Google Sheet, accessed through a small Google Apps Script web app.
 
-- Kanban board (To Do / In Progress / Done) with drag and drop, plus a list view
-- Priority, project, due date, and description on every task; overdue tasks highlighted
-- Search and filter by project or priority; hide completed tasks
+- **Workspace layout:** sidebar with smart lists (Today, Next 7 days, Overdue, Completed) and projects, with live counts
+- **Dashboard:** KPI tiles, completions per day, open work by priority, workload by project, upcoming deadlines, recent activity
+- **Board:** drag and drop between To Do, In Progress and Done, plus inline quick-add in each column
+- **Table:** sortable columns, multi-select, and bulk actions (mark done, set status or priority, delete)
+- **Task panel:** a side drawer with every field, timestamps, duplicate and delete (with undo)
+- **Command palette** (`Ctrl K`): jump to any task, project or view
+- Light, dark and system themes; works on phones
 - Every task is a row in your Google Sheet, so you can also edit, sort, or chart it there
 - Works without a backend in **local mode** (saved in the browser) until you connect a sheet
-- Shortcuts: `N` new task, `/` search
+- Shortcuts: `Ctrl K` palette, `N` new task, `/` filter, `Ctrl Enter` save, `Esc` close
 
 ```
 GitHub Pages (index.html, app.js)  ──POST JSON──▶  Apps Script web app  ──▶  Google Sheet "Tasks"

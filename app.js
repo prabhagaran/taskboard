@@ -1,10 +1,15 @@
 'use strict';
 
+/* ==========================================================================
+   Constants
+   ========================================================================== */
 const STATUSES = [
   { id: 'todo', label: 'To Do' },
   { id: 'inprogress', label: 'In Progress' },
   { id: 'done', label: 'Done' },
 ];
+const STATUS_LABEL = Object.fromEntries(STATUSES.map((s) => [s.id, s.label]));
+const STATUS_RANK = { todo: 0, inprogress: 1, done: 2 };
 const PRIORITIES = { high: 'High', medium: 'Medium', low: 'Low' };
 const PRIORITY_RANK = { high: 0, medium: 1, low: 2 };
 
@@ -12,10 +17,22 @@ const CONFIG_KEY = 'taskboard.config';
 const PREFS_KEY = 'taskboard.prefs';
 const LOCAL_TASKS_KEY = 'taskboard.localTasks';
 
+// Smart lists in the sidebar. `test` selects tasks; `badge` is the sidebar count.
+const SCOPES = [
+  { id: 'dashboard', label: 'Dashboard', icon: 'dashboard' },
+  { id: 'all', label: 'All tasks', icon: 'inbox', test: () => true, badge: isOpen },
+  { id: 'today', label: 'Today', icon: 'today', test: (t) => isOpen(t) && t.dueDate && t.dueDate <= todayStr() },
+  { id: 'upcoming', label: 'Next 7 days', icon: 'calendar', test: (t) => isOpen(t) && t.dueDate > todayStr() && t.dueDate <= addDays(7) },
+  { id: 'overdue', label: 'Overdue', icon: 'alert', test: isOverdue, alert: true },
+  { id: 'completed', label: 'Completed', icon: 'done', test: (t) => t.status === 'done' },
+];
+
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
-/* ---------- Storage (localStorage can throw in private mode) ---------- */
+/* ==========================================================================
+   Storage (localStorage can throw in private mode)
+   ========================================================================== */
 function storageGet(key, fallback) {
   try {
     const raw = localStorage.getItem(key);
@@ -35,16 +52,23 @@ function storageSet(key, value) {
 const state = {
   tasks: [],
   config: storageGet(CONFIG_KEY, { url: '', token: '' }),
-  prefs: storageGet(PREFS_KEY, { view: 'board', hideDone: false }),
-  filters: { search: '', project: '', priority: '' },
+  prefs: { view: 'board', hideDone: false, theme: 'system', sort: { key: 'priority', dir: 'asc' }, ...storageGet(PREFS_KEY, {}) },
+  route: parseRoute(),
+  filters: { search: '', priority: '' },
+  selection: new Set(),
+  quickAdd: null, // { status, text } while the inline board composer is open
   pending: 0,
   syncError: '',
   loaded: false,
 };
+if (state.prefs.view === 'list') state.prefs.view = 'table';
 
 const isRemote = () => Boolean(state.config.url && state.config.token);
+const savePrefs = () => storageSet(PREFS_KEY, state.prefs);
 
-/* ---------- API ---------- */
+/* ==========================================================================
+   API
+   ========================================================================== */
 async function remoteCall(action, payload = {}, config = state.config) {
   let res;
   try {
@@ -82,7 +106,7 @@ const api = {
     if (isRemote()) return (await remoteCall('create', { task })).task;
     const now = new Date().toISOString();
     const saved = { ...task, createdAt: now, updatedAt: now };
-    localStore.write([...localStore.read(), saved]);
+    localStore.write([...localStore.read().filter((t) => t.id !== task.id), saved]);
     return saved;
   },
   async update(task) {
@@ -110,22 +134,33 @@ async function withSync(fn) {
   } finally {
     state.pending--;
     renderSync();
+    renderBanners();
   }
 }
 
-/* ---------- Data operations (optimistic, rolled back on failure) ---------- */
+/* ==========================================================================
+   Data operations (optimistic, rolled back per task on failure)
+   ========================================================================== */
 function normalize(task) {
   return {
     id: String(task.id),
     title: task.title || '(untitled)',
     description: task.description || '',
-    status: STATUSES.some((s) => s.id === task.status) ? task.status : 'todo',
+    status: STATUS_LABEL[task.status] ? task.status : 'todo',
     priority: PRIORITIES[task.priority] ? task.priority : 'medium',
     project: task.project || '',
-    dueDate: task.dueDate || '',
+    dueDate: /^\d{4}-\d{2}-\d{2}$/.test(task.dueDate || '') ? task.dueDate : '',
     createdAt: task.createdAt || '',
     updatedAt: task.updatedAt || '',
   };
+}
+
+function putLocal(task) {
+  const exists = state.tasks.some((t) => t.id === task.id);
+  state.tasks = exists ? state.tasks.map((t) => (t.id === task.id ? task : t)) : [...state.tasks, task];
+}
+function dropLocal(id) {
+  state.tasks = state.tasks.filter((t) => t.id !== id);
 }
 
 async function loadTasks() {
@@ -136,41 +171,79 @@ async function loadTasks() {
     state.tasks = tasks.map(normalize);
     state.loaded = true;
   } catch (err) {
-    toast(`Could not load tasks: ${err.message}`, true);
+    toast(`Could not load tasks: ${err.message}`, { error: true });
   } finally {
     btn.classList.remove('spinning');
     render();
   }
 }
 
-async function saveTask(task, isNew) {
-  const snapshot = state.tasks;
-  state.tasks = isNew ? [...state.tasks, task] : state.tasks.map((t) => (t.id === task.id ? task : t));
-  render();
+async function persist(task, isNew, prev) {
   try {
     const saved = normalize(await withSync(() => (isNew ? api.create(task) : api.update(task))));
-    // The server may assign a different id; match on the one we sent.
-    state.tasks = state.tasks.map((t) => (t.id === task.id ? saved : t));
-    render();
+    if (state.tasks.some((t) => t.id === task.id)) {
+      dropLocal(task.id);
+      putLocal(saved);
+    }
+    return true;
   } catch (err) {
-    state.tasks = snapshot;
+    if (prev) putLocal(prev);
+    else dropLocal(task.id);
+    toast(`Could not save “${task.title}”: ${err.message}`, { error: true });
+    return false;
+  } finally {
     render();
-    toast(`Could not save task: ${err.message}`, true);
   }
 }
 
-async function deleteTask(id) {
-  const snapshot = state.tasks;
-  state.tasks = state.tasks.filter((t) => t.id !== id);
+function saveTask(task, isNew) {
+  const prev = isNew ? null : state.tasks.find((t) => t.id === task.id);
+  putLocal(task);
   render();
-  try {
-    await withSync(() => api.remove(id));
-    toast('Task deleted');
-  } catch (err) {
-    state.tasks = snapshot;
-    render();
-    toast(`Could not delete task: ${err.message}`, true);
+  return persist(task, isNew, prev);
+}
+
+async function bulkUpdate(ids, patch) {
+  const jobs = state.tasks.filter((t) => ids.has(t.id)).map((prev) => ({ prev, next: { ...prev, ...patch } }));
+  jobs.forEach((j) => putLocal(j.next));
+  render();
+  // Sequential so the Apps Script lock isn't contended by a burst of writes.
+  let ok = 0;
+  for (const j of jobs) if (await persist(j.next, false, j.prev)) ok++;
+  if (ok) toast(`Updated ${ok} task${ok === 1 ? '' : 's'}`);
+}
+
+async function deleteTasks(ids) {
+  const removed = state.tasks.filter((t) => ids.has(t.id));
+  if (!removed.length) return;
+  removed.forEach((t) => {
+    dropLocal(t.id);
+    state.selection.delete(t.id);
+  });
+  render();
+  const failed = [];
+  for (const t of removed) {
+    try {
+      await withSync(() => api.remove(t.id));
+    } catch {
+      failed.push(t);
+    }
   }
+  if (failed.length) {
+    failed.forEach(putLocal);
+    render();
+    toast(`Could not delete ${failed.length} task${failed.length === 1 ? '' : 's'}`, { error: true });
+  }
+  const deleted = removed.filter((t) => !failed.includes(t));
+  if (deleted.length) {
+    const msg = deleted.length === 1 ? `Deleted “${deleted[0].title}”` : `Deleted ${deleted.length} tasks`;
+    toast(msg, { action: { label: 'Undo', run: () => restoreTasks(deleted) } });
+  }
+}
+
+async function restoreTasks(tasks) {
+  for (const t of tasks) await saveTask(t, true);
+  toast(tasks.length === 1 ? 'Task restored' : `${tasks.length} tasks restored`);
 }
 
 function setStatus(id, status) {
@@ -178,78 +251,265 @@ function setStatus(id, status) {
   if (task && task.status !== status) saveTask({ ...task, status }, false);
 }
 
-/* ---------- Helpers ---------- */
-const esc = (s) =>
-  String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-
-const pad = (n) => String(n).padStart(2, '0');
-function todayStr() {
-  const d = new Date();
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+function newTask(fields) {
+  return normalize({ id: newId(), title: '', status: 'todo', priority: 'medium', createdAt: new Date().toISOString(), ...fields });
 }
 
-function dueInfo(task) {
-  if (!task.dueDate) return null;
-  const [y, m, d] = task.dueDate.split('-').map(Number);
-  const date = new Date(y, m - 1, d);
-  if (Number.isNaN(date.getTime())) return null;
-  const today = todayStr();
-  const label = date.toLocaleDateString(undefined, {
+/* ==========================================================================
+   Helpers
+   ========================================================================== */
+const esc = (s) =>
+  String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const icon = (name) => `<svg class="i" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+const pad = (n) => String(n).padStart(2, '0');
+const localDate = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const todayStr = () => localDate(new Date());
+function addDays(n, from = new Date()) {
+  const d = new Date(from);
+  d.setDate(d.getDate() + n);
+  return localDate(d);
+}
+function parseLocal(s) {
+  const [y, m, d] = s.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+function isOpen(t) {
+  return t.status !== 'done';
+}
+function isOverdue(t) {
+  return isOpen(t) && Boolean(t.dueDate) && t.dueDate < todayStr();
+}
+
+function fmtDate(s, opts = {}) {
+  const d = parseLocal(s);
+  return d.toLocaleDateString(undefined, {
     month: 'short',
     day: 'numeric',
-    year: y !== new Date().getFullYear() ? 'numeric' : undefined,
+    year: d.getFullYear() !== new Date().getFullYear() ? 'numeric' : undefined,
+    ...opts,
   });
-  return {
-    label: task.dueDate === today ? 'Today' : label,
-    overdue: task.status !== 'done' && task.dueDate < today,
-    today: task.dueDate === today,
-  };
+}
+
+function dueInfo(t) {
+  if (!t.dueDate) return null;
+  const today = todayStr();
+  if (t.dueDate === today) return { text: 'Today', tone: isOpen(t) ? 'today' : '' };
+  if (t.dueDate === addDays(1)) return { text: 'Tomorrow', tone: '' };
+  if (t.dueDate === addDays(-1)) return { text: 'Yesterday', tone: isOpen(t) ? 'overdue' : '' };
+  return { text: fmtDate(t.dueDate), tone: isOverdue(t) ? 'overdue' : '' };
+}
+
+function dueHtml(t) {
+  const due = dueInfo(t);
+  if (!due) return '';
+  const label = due.tone === 'overdue' ? `Overdue · ${due.text}` : due.text;
+  return `<span class="due ${due.tone}">${icon(due.tone === 'overdue' ? 'alert' : 'calendar')}${esc(label)}</span>`;
+}
+
+function relTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const mins = Math.round((Date.now() - d.getTime()) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function fullTime(iso) {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+// Completion date is approximated by the last update of a done task.
+function completedOn(t) {
+  if (t.status !== 'done' || !t.updatedAt) return '';
+  const d = new Date(t.updatedAt);
+  return Number.isNaN(d.getTime()) ? '' : localDate(d);
 }
 
 function newId() {
   return crypto.randomUUID ? crypto.randomUUID() : `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function compareTasks(a, b) {
-  return (
-    PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority] ||
-    (a.dueDate || '9999').localeCompare(b.dueDate || '9999') ||
-    a.createdAt.localeCompare(b.createdAt)
-  );
+const priorityHtml = (p) => `<span class="prio ${p}">${icon('flag')}${PRIORITIES[p]}</span>`;
+const statusHtml = (s) => `<span class="status-pill"><span class="dot ${s}"></span>${STATUS_LABEL[s]}</span>`;
+const projectHtml = (p) => (p ? `<span class="tag" title="${esc(p)}">${icon('folder')}${esc(p)}</span>` : '');
+
+function projects() {
+  return [...new Set(state.tasks.map((t) => t.project).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+}
+
+/* ==========================================================================
+   Routing (#/dashboard, #/today, #/project/<name>, ...)
+   ========================================================================== */
+function parseRoute() {
+  const path = decodeURIComponent(location.hash.replace(/^#\/?/, ''));
+  if (path.startsWith('project/')) return { scope: 'project', project: path.slice(8) };
+  if (SCOPES.some((s) => s.id === path)) return { scope: path, project: null };
+  return { scope: 'all', project: null };
+}
+function routeHash(route) {
+  return route.scope === 'project' ? `#/project/${encodeURIComponent(route.project)}` : `#/${route.scope}`;
+}
+function go(route) {
+  location.hash = routeHash(route);
+}
+window.addEventListener('hashchange', () => {
+  state.route = parseRoute();
+  state.selection.clear();
+  state.quickAdd = null;
+  $('#app').classList.remove('nav-open');
+  render();
+  window.scrollTo(0, 0);
+});
+
+function scopeTasks(route = state.route) {
+  if (route.scope === 'project') return state.tasks.filter((t) => t.project === route.project);
+  const scope = SCOPES.find((s) => s.id === route.scope);
+  return scope && scope.test ? state.tasks.filter(scope.test) : state.tasks;
 }
 
 function visibleTasks() {
   const q = state.filters.search.trim().toLowerCase();
-  return state.tasks
-    .filter((t) => !state.prefs.hideDone || t.status !== 'done')
-    .filter((t) => !state.filters.project || t.project === state.filters.project)
+  const hideDone = state.prefs.hideDone && state.route.scope !== 'completed';
+  return scopeTasks()
+    .filter((t) => !hideDone || t.status !== 'done')
     .filter((t) => !state.filters.priority || t.priority === state.filters.priority)
-    .filter((t) => !q || `${t.title} ${t.description} ${t.project}`.toLowerCase().includes(q))
-    .sort(compareTasks);
+    .filter((t) => !q || `${t.title} ${t.description} ${t.project}`.toLowerCase().includes(q));
 }
 
-/* ---------- Rendering ---------- */
+function routeDefaults() {
+  if (state.route.scope === 'project') return { project: state.route.project };
+  if (state.route.scope === 'today') return { dueDate: todayStr() };
+  return {};
+}
+
+/* ==========================================================================
+   Sorting
+   ========================================================================== */
+const SORTERS = {
+  title: (a, b) => a.title.localeCompare(b.title),
+  status: (a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status],
+  priority: (a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority],
+  project: (a, b) => (a.project || '￿').localeCompare(b.project || '￿'),
+  dueDate: (a, b) => (a.dueDate || '9999').localeCompare(b.dueDate || '9999'),
+  updatedAt: (a, b) => b.updatedAt.localeCompare(a.updatedAt),
+};
+
+function defaultCompare(a, b) {
+  return SORTERS.priority(a, b) || SORTERS.dueDate(a, b) || a.createdAt.localeCompare(b.createdAt);
+}
+
+function sortTasks(tasks) {
+  const { key, dir } = state.prefs.sort;
+  const sorter = SORTERS[key] || SORTERS.priority;
+  const sign = dir === 'desc' ? -1 : 1;
+  return [...tasks].sort((a, b) => sign * sorter(a, b) || defaultCompare(a, b));
+}
+
+/* ==========================================================================
+   Rendering
+   ========================================================================== */
 function render() {
+  applyTheme();
+  renderSidebar();
+  renderHeader();
+  renderBanners();
   renderSync();
-  renderStats();
-  renderProjects();
-  $('#setupBanner').hidden = isRemote();
-  $('#errorBanner').hidden = !state.syncError;
-  $('#errorText').textContent = state.syncError ? `Sync error: ${state.syncError}` : '';
-  $$('.segmented button').forEach((b) => {
+  renderDatalist();
+
+  const isDash = state.route.scope === 'dashboard';
+  $('#toolbar').hidden = isDash;
+  $('#hideDoneWrap').hidden = state.route.scope === 'completed';
+  $('#hideDone').checked = state.prefs.hideDone;
+  $$('#viewSwitch button').forEach((b) => {
     const active = b.dataset.view === state.prefs.view;
     b.classList.toggle('active', active);
     b.setAttribute('aria-selected', active);
   });
-  $('#hideDone').checked = state.prefs.hideDone;
+
+  const main = $('#main');
+  if (isDash) {
+    $('#bulkbar').hidden = true;
+    main.innerHTML = dashboardHtml();
+    return;
+  }
 
   const tasks = visibleTasks();
-  $('#main').innerHTML = state.prefs.view === 'list' ? listHtml(tasks) : boardHtml(tasks);
+  const visibleIds = new Set(tasks.map((t) => t.id));
+  for (const id of state.selection) if (!visibleIds.has(id)) state.selection.delete(id);
+  $('#resultCount').textContent = plural(tasks.length, 'task');
+
+  if (isRemote() && !state.loaded) main.innerHTML = skeletonHtml();
+  else if (state.prefs.view === 'table') main.innerHTML = tableHtml(tasks);
+  else main.innerHTML = boardHtml(tasks);
+
+  renderBulkbar();
+  restoreQuickAdd();
+}
+
+function renderSidebar() {
+  const r = state.route;
+  $('#navMain').innerHTML = SCOPES.map((s) => {
+    let count = '';
+    if (s.test) {
+      const n = state.tasks.filter(s.badge || s.test).length;
+      if (n) count = `<span class="count ${s.alert ? 'alert' : ''}">${n}</span>`;
+    }
+    const active = r.scope === s.id ? 'active' : '';
+    return `<a class="sb-link ${active}" href="${routeHash({ scope: s.id })}" ${active ? 'aria-current="page"' : ''}>
+      ${icon(s.icon)}<span class="label">${s.label}</span>${count}</a>`;
+  }).join('');
+
+  const list = projects();
+  $('#navProjects').innerHTML = list.length
+    ? list
+        .map((p) => {
+          const open = state.tasks.filter((t) => t.project === p && isOpen(t)).length;
+          const active = r.scope === 'project' && r.project === p ? 'active' : '';
+          return `<a class="sb-link ${active}" href="${esc(routeHash({ scope: 'project', project: p }))}" title="${esc(p)}">
+            ${icon('folder')}<span class="label">${esc(p)}</span>${open ? `<span class="count">${open}</span>` : ''}</a>`;
+        })
+        .join('')
+    : `<div class="sb-empty">Add a project to a task to see it here.</div>`;
+}
+
+function renderHeader() {
+  const r = state.route;
+  let crumbs = 'Tasks';
+  let title = 'All tasks';
+  if (r.scope === 'dashboard') {
+    crumbs = 'Workspace';
+    title = 'Dashboard';
+  } else if (r.scope === 'project') {
+    crumbs = 'Projects';
+    title = r.project;
+  } else {
+    title = SCOPES.find((s) => s.id === r.scope).label;
+  }
+  $('#crumbs').textContent = crumbs;
+  $('#pageTitle').textContent = title;
+  document.title = `${title} · TaskBoard`;
+}
+
+function renderBanners() {
+  $('#setupBanner').hidden = isRemote();
+  $('#errorBanner').hidden = !state.syncError;
+  $('#errorText').textContent = state.syncError ? `Sync error: ${state.syncError}` : '';
 }
 
 function renderSync() {
   const el = $('#sync');
   el.className = 'sync';
+  el.title = '';
   if (state.pending) {
     el.classList.add('saving');
     el.textContent = 'Syncing…';
@@ -259,114 +519,333 @@ function renderSync() {
     el.title = state.syncError;
   } else {
     el.classList.add('ok');
-    el.textContent = isRemote() ? 'Google Sheets' : 'Local mode';
-    el.title = '';
+    el.textContent = isRemote() ? 'Synced with Google Sheets' : 'Local mode';
   }
 }
 
-function renderStats() {
-  const open = state.tasks.filter((t) => t.status !== 'done');
-  const overdue = open.filter((t) => dueInfo(t)?.overdue).length;
-  const done = state.tasks.length - open.length;
-  $('#stats').innerHTML = `
-    <span><b>${open.length}</b> open</span>
-    <span class="${overdue ? 'overdue' : ''}"><b>${overdue}</b> overdue</span>
-    <span><b>${done}</b> done</span>`;
+function renderDatalist() {
+  $('#projectList').innerHTML = projects()
+    .map((p) => `<option value="${esc(p)}">`)
+    .join('');
 }
 
-function renderProjects() {
-  const projects = [...new Set(state.tasks.map((t) => t.project).filter(Boolean))].sort((a, b) => a.localeCompare(b));
-  if (state.filters.project && !projects.includes(state.filters.project)) state.filters.project = '';
-  $('#projectFilter').innerHTML =
-    `<option value="">All projects</option>` +
-    projects.map((p) => `<option value="${esc(p)}" ${p === state.filters.project ? 'selected' : ''}>${esc(p)}</option>`).join('');
-  $('#projectList').innerHTML = projects.map((p) => `<option value="${esc(p)}">`).join('');
+function renderBulkbar() {
+  const n = state.selection.size;
+  $('#bulkbar').hidden = !n || state.prefs.view !== 'table';
+  $('#bulkCount').textContent = `${n} selected`;
 }
 
+function skeletonHtml() {
+  const card = `<div class="skeleton" style="height:76px"></div>`;
+  return `<div class="board">${STATUSES.map(
+    (s) => `<section class="column"><div class="column-head"><span class="dot ${s.id}"></span><h2>${s.label}</h2></div>
+      <div class="column-body">${card.repeat(s.id === 'done' ? 1 : 3)}</div></section>`,
+  ).join('')}</div>`;
+}
+
+function emptyStateHtml() {
+  const filtered = state.filters.search || state.filters.priority;
+  if (filtered) {
+    return `<div class="empty-state"><div class="empty-icon">${icon('search')}</div>
+      <h3>No matching tasks</h3><p>Try a different search or clear the priority filter.</p>
+      <button class="btn" data-action="clear-filters">Clear filters</button></div>`;
+  }
+  return `<div class="empty-state"><div class="empty-icon">${icon('check')}</div>
+    <h3>${state.route.scope === 'overdue' ? 'Nothing overdue' : 'No tasks here yet'}</h3>
+    <p>${state.route.scope === 'overdue' ? 'You are on top of your deadlines.' : 'Create a task to start tracking your work.'}</p>
+    <button class="btn primary" data-action="new">${icon('plus')}New task</button></div>`;
+}
+
+/* ---------- Board ---------- */
 function boardHtml(tasks) {
-  const emptyText = state.loaded || !isRemote() ? 'No tasks' : state.syncError ? 'Could not load tasks' : 'Loading…';
   return `<div class="board">${STATUSES.map((s) => {
-    const items = tasks.filter((t) => t.status === s.id);
+    const items = sortTasks(tasks.filter((t) => t.status === s.id));
+    const composing = state.quickAdd && state.quickAdd.status === s.id;
+    const composer = composing
+      ? `<input class="input quick-input" data-quick="${s.id}" placeholder="Task title, then Enter" maxlength="500" aria-label="New task title">`
+      : `<button class="quick-add" data-quick-open="${s.id}">${icon('plus')}Add task</button>`;
     return `
-      <section class="column" data-status="${s.id}">
+      <section class="column" aria-label="${s.label}">
         <div class="column-head">
-          <span>${s.label}</span>
+          <span class="dot ${s.id}"></span>
+          <h2>${s.label}</h2>
           <span class="count">${items.length}</span>
-          <button class="add" data-add="${s.id}" title="Add to ${s.label}" aria-label="Add task to ${s.label}">
-            <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
-          </button>
+          <button class="icon-btn ghost" data-quick-open="${s.id}" title="Add to ${s.label}" aria-label="Add task to ${s.label}">${icon('plus')}</button>
         </div>
         <div class="column-body" data-status="${s.id}">
-          ${items.length ? items.map(cardHtml).join('') : `<div class="empty">${emptyText}</div>`}
+          ${items.length ? items.map(cardHtml).join('') : `<div class="column-empty">Drop tasks here</div>`}
+          ${composer}
         </div>
       </section>`;
   }).join('')}</div>`;
 }
 
 function cardHtml(t) {
-  const due = dueInfo(t);
   const done = t.status === 'done';
+  const top = [projectHtml(t.project)].filter(Boolean).join('');
   return `
     <article class="card ${done ? 'is-done' : ''}" draggable="true" tabindex="0" data-id="${esc(t.id)}">
-      <div class="card-top">
-        <input type="checkbox" class="toggle" ${done ? 'checked' : ''} aria-label="Mark “${esc(t.title)}” done">
+      ${top ? `<div class="card-top">${top}</div>` : ''}
+      <div class="card-row">
+        <input type="checkbox" class="checkbox toggle" ${done ? 'checked' : ''} aria-label="Mark “${esc(t.title)}” done">
         <h3 class="card-title">${esc(t.title)}</h3>
       </div>
       ${t.description ? `<p class="card-desc">${esc(t.description)}</p>` : ''}
-      <div class="meta">
-        <span class="badge prio-${t.priority}">${PRIORITIES[t.priority]}</span>
-        ${t.project ? `<span class="chip">${esc(t.project)}</span>` : ''}
-        ${due ? `<span class="due ${due.overdue ? 'overdue' : ''} ${due.today ? 'today' : ''}">${due.overdue ? 'Overdue · ' : ''}${esc(due.label)}</span>` : ''}
+      <div class="card-foot">
+        ${priorityHtml(t.priority)}
+        ${dueHtml(t)}
+        <span class="updated" title="Updated ${esc(fullTime(t.updatedAt))}">${esc(relTime(t.updatedAt))}</span>
       </div>
     </article>`;
 }
 
-function listHtml(tasks) {
-  if (!tasks.length) return `<div class="table-wrap"><div class="empty">No tasks</div></div>`;
-  const order = Object.fromEntries(STATUSES.map((s, i) => [s.id, i]));
-  const rows = [...tasks]
-    .sort((a, b) => order[a.status] - order[b.status] || compareTasks(a, b))
+function restoreQuickAdd() {
+  const input = state.quickAdd && $(`[data-quick="${state.quickAdd.status}"]`);
+  if (!input) return;
+  input.value = state.quickAdd.text;
+  input.focus();
+}
+
+/* ---------- Table ---------- */
+const COLUMNS = [
+  { key: 'title', label: 'Task' },
+  { key: 'status', label: 'Status' },
+  { key: 'priority', label: 'Priority' },
+  { key: 'project', label: 'Project' },
+  { key: 'dueDate', label: 'Due' },
+  { key: 'updatedAt', label: 'Updated' },
+];
+
+function tableHtml(tasks) {
+  if (!tasks.length) return emptyStateHtml();
+  const rows = sortTasks(tasks);
+  const allSelected = rows.every((t) => state.selection.has(t.id));
+  const someSelected = !allSelected && rows.some((t) => state.selection.has(t.id));
+  const { key, dir } = state.prefs.sort;
+  const head = COLUMNS.map((c) => {
+    const active = c.key === key;
+    const aria = active ? `aria-sort="${dir === 'asc' ? 'ascending' : 'descending'}"` : '';
+    const ic = active ? (dir === 'asc' ? 'arrow-up' : 'arrow-down') : 'sort';
+    return `<th ${aria}><button class="sort-btn ${active ? 'active' : ''}" data-sort="${c.key}">${c.label}${icon(ic)}</button></th>`;
+  }).join('');
+  const body = rows
     .map((t) => {
-      const due = dueInfo(t);
-      const status = STATUSES.find((s) => s.id === t.status).label;
+      const sel = state.selection.has(t.id);
       return `
-        <tr class="row ${t.status === 'done' ? 'is-done' : ''}" data-id="${esc(t.id)}" tabindex="0">
-          <td><input type="checkbox" class="toggle" ${t.status === 'done' ? 'checked' : ''} aria-label="Mark done"></td>
-          <td class="title-cell">${esc(t.title)}</td>
-          <td>${status}</td>
-          <td><span class="badge prio-${t.priority}">${PRIORITIES[t.priority]}</span></td>
-          <td>${t.project ? `<span class="chip">${esc(t.project)}</span>` : ''}</td>
-          <td>${due ? `<span class="due ${due.overdue ? 'overdue' : ''} ${due.today ? 'today' : ''}">${esc(due.label)}</span>` : ''}</td>
+        <tr class="${sel ? 'selected' : ''} ${t.status === 'done' ? 'is-done' : ''}" data-id="${esc(t.id)}" tabindex="0">
+          <td class="sel"><input type="checkbox" class="checkbox row-select" ${sel ? 'checked' : ''} aria-label="Select “${esc(t.title)}”"></td>
+          <td class="title-cell"><strong>${esc(t.title)}</strong>${t.description ? `<small>${esc(t.description)}</small>` : ''}</td>
+          <td>${statusHtml(t.status)}</td>
+          <td>${priorityHtml(t.priority)}</td>
+          <td>${projectHtml(t.project) || '<span class="muted-cell">—</span>'}</td>
+          <td>${dueHtml(t) || '<span class="muted-cell">—</span>'}</td>
+          <td class="num" title="${esc(fullTime(t.updatedAt))}">${esc(relTime(t.updatedAt))}</td>
         </tr>`;
     })
     .join('');
   return `
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th></th><th>Task</th><th>Status</th><th>Priority</th><th>Project</th><th>Due</th></tr></thead>
-        <tbody>${rows}</tbody>
+    <div class="table-card">
+      <table class="data-table">
+        <thead><tr>
+          <th class="sel"><input type="checkbox" class="checkbox" id="selectAll" ${allSelected ? 'checked' : ''} data-indeterminate="${someSelected}" aria-label="Select all"></th>
+          ${head}
+        </tr></thead>
+        <tbody>${body}</tbody>
       </table>
     </div>`;
 }
 
-/* ---------- Task dialog ---------- */
-const taskDialog = $('#taskDialog');
+/* ---------- Dashboard ---------- */
+function dashboardHtml() {
+  if (isRemote() && !state.loaded) {
+    const tile = `<div class="kpi"><div class="skeleton" style="height:70px"></div></div>`;
+    return `<div class="dash">${tile.repeat(4)}<div class="panel wide"><div class="panel-body"><div class="skeleton" style="height:220px"></div></div></div>
+      <div class="panel narrow"><div class="panel-body"><div class="skeleton" style="height:220px"></div></div></div></div>`;
+  }
+
+  const today = todayStr();
+  const open = state.tasks.filter(isOpen);
+  const overdue = open.filter(isOverdue);
+  const dueToday = open.filter((t) => t.dueDate === today);
+  const weekStart = addDays(-6);
+  const doneWeek = state.tasks.filter((t) => completedOn(t) >= weekStart);
+  const inProgress = open.filter((t) => t.status === 'inprogress');
+  const dateLabel = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+
+  const kpi = (scope, iconName, label, value, sub) =>
+    `<button class="kpi" data-go="${scope}"><span class="kpi-label">${icon(iconName)}${label}</span>
+      <span class="kpi-value">${value}</span>${sub}</button>`;
+
+  return `
+    <div class="dash">
+      <div class="dash-intro"><h2>Overview</h2><span>${esc(dateLabel)}</span></div>
+      ${kpi('all', 'inbox', 'Open tasks', open.length, `<span class="kpi-sub">${plural(inProgress.length, 'task')} in progress</span>`)}
+      ${kpi('today', 'today', 'Due today', dueToday.length, `<span class="kpi-sub">${open.filter((t) => t.dueDate > today && t.dueDate <= addDays(7)).length} more in the next 7 days</span>`)}
+      ${kpi('overdue', 'alert', 'Overdue', overdue.length, overdue.length
+        ? `<span class="kpi-sub critical">${icon('alert')}Needs attention</span>`
+        : `<span class="kpi-sub good">${icon('done')}All on track</span>`)}
+      ${kpi('completed', 'done', 'Completed · 7 days', doneWeek.length, `<span class="kpi-sub">${plural(state.tasks.length - open.length, 'task')} done overall</span>`)}
+
+      <section class="panel wide">
+        <div class="panel-head"><h3>Completed per day</h3><span class="sub">Last 14 days</span></div>
+        <div class="panel-body">${completionChartHtml()}</div>
+      </section>
+      <section class="panel narrow">
+        <div class="panel-head"><h3>Open by priority</h3></div>
+        <div class="panel-body">${priorityChartHtml(open)}</div>
+      </section>
+
+      <section class="panel wide">
+        <div class="panel-head">
+          <h3>Workload by project</h3>
+          <span class="spacer"></span>
+          <div class="legend">${STATUSES.map((s) => `<span><i class="sw" style="--dot: var(${statusVar(s.id)})"></i>${s.label}</span>`).join('')}</div>
+        </div>
+        <div class="panel-body">${projectChartHtml()}</div>
+      </section>
+      <section class="panel narrow">
+        <div class="panel-head"><h3>Upcoming deadlines</h3><span class="spacer"></span>
+          <a class="btn small ghost" href="#/upcoming">View all${icon('arrow-right')}</a></div>
+        <div class="panel-body">${deadlineListHtml(open)}</div>
+      </section>
+
+      <section class="panel" style="grid-column: 1 / -1">
+        <div class="panel-head"><h3>Recent activity</h3></div>
+        <div class="panel-body">${recentListHtml()}</div>
+      </section>
+    </div>`;
+}
+
+const statusVar = (s) => ({ todo: '--s-todo', inprogress: '--s-progress', done: '--s-done' })[s];
+
+function completionChartHtml() {
+  const days = Array.from({ length: 14 }, (_, i) => addDays(i - 13));
+  const counts = Object.fromEntries(days.map((d) => [d, 0]));
+  state.tasks.forEach((t) => {
+    const d = completedOn(t);
+    if (d in counts) counts[d]++;
+  });
+  const values = days.map((d) => counts[d]);
+  const total = values.reduce((a, b) => a + b, 0);
+  const top = Math.max(4, Math.ceil(Math.max(...values) / 2) * 2);
+  const ticks = [top, top / 2, 0];
+  const cols = days
+    .map((d, i) => {
+      const v = values[i];
+      const label = fmtDate(d, { weekday: 'short' });
+      const h = (v / top) * 100;
+      return `<div class="vcol" tabindex="0" data-tip="${esc(label)}: ${plural(v, 'task')} completed" aria-label="${esc(label)}: ${v} completed">
+        ${v ? `<span class="vval" style="bottom: calc(${h}% + 4px)">${v}</span>` : ''}
+        <div class="vbar" style="height:${h}%"></div></div>`;
+    })
+    .join('');
+  const xLabels = days
+    .map((d, i) => `<span>${i % 2 === 1 || i === 13 ? esc(i === 13 ? 'Today' : fmtDate(d)) : ''}</span>`)
+    .join('');
+  return `
+    <div class="vchart" role="img" aria-label="${plural(total, 'task')} completed in the last 14 days">
+      <div class="vchart-y">${ticks.map((t) => `<span>${t}</span>`).join('')}</div>
+      <div class="vchart-plot">
+        <div class="gridline" style="top:0"></div><div class="gridline" style="top:50%"></div>
+        ${cols}
+      </div>
+      <div class="vchart-x">${xLabels}</div>
+    </div>`;
+}
+
+function priorityChartHtml(open) {
+  if (!open.length) return `<div class="panel-empty">No open tasks</div>`;
+  const counts = Object.keys(PRIORITIES).map((p) => [p, open.filter((t) => t.priority === p).length]);
+  const max = Math.max(...counts.map(([, n]) => n), 1);
+  return `<div class="hbars">${counts
+    .map(
+      ([p, n]) => `
+      <div class="hrow">
+        <span class="hrow-label">${priorityHtml(p)}</span>
+        <div class="hrow-track">${n ? `<div class="hseg seq" style="width:${(n / max) * 100}%" data-tip="${PRIORITIES[p]}: ${plural(n, 'open task')}"></div>` : ''}</div>
+        <span class="hrow-total">${n}</span>
+      </div>`,
+    )
+    .join('')}</div>`;
+}
+
+function projectChartHtml() {
+  if (!state.tasks.length) return `<div class="panel-empty">No tasks yet</div>`;
+  const groups = new Map();
+  state.tasks.forEach((t) => {
+    const key = t.project || '';
+    if (!groups.has(key)) groups.set(key, { todo: 0, inprogress: 0, done: 0, total: 0 });
+    const g = groups.get(key);
+    g[t.status]++;
+    g.total++;
+  });
+  let rows = [...groups.entries()].sort((a, b) => b[1].total - a[1].total);
+  // Keep the chart readable: fold the long tail into "Other".
+  if (rows.length > 8) {
+    const other = { todo: 0, inprogress: 0, done: 0, total: 0, other: true };
+    rows.slice(7).forEach(([, g]) => STATUSES.forEach((s) => (other[s.id] += g[s.id])));
+    other.total = other.todo + other.inprogress + other.done;
+    rows = [...rows.slice(0, 7), ['Other projects', other]];
+  }
+  const max = Math.max(...rows.map(([, g]) => g.total));
+  return `<div class="hbars">${rows
+    .map(([name, g]) => {
+      const label = name || 'No project';
+      const segs = STATUSES.filter((s) => g[s.id])
+        .map((s) => `<div class="hseg ${s.id}" style="width:${(g[s.id] / max) * 100}%" data-tip="${esc(label)} · ${s.label}: ${g[s.id]}"></div>`)
+        .join('');
+      const link = name && !g.other
+        ? `<button data-go-project="${esc(name)}" title="${esc(name)}">${esc(name)}</button>`
+        : `<span class="muted">${esc(label)}</span>`;
+      return `<div class="hrow"><span class="hrow-label">${link}</span><div class="hrow-track">${segs}</div><span class="hrow-total">${g.total}</span></div>`;
+    })
+    .join('')}</div>`;
+}
+
+function deadlineListHtml(open) {
+  const items = open
+    .filter((t) => t.dueDate && t.dueDate <= addDays(14))
+    .sort((a, b) => SORTERS.dueDate(a, b) || SORTERS.priority(a, b))
+    .slice(0, 7);
+  if (!items.length) return `<div class="panel-empty">No deadlines in the next two weeks</div>`;
+  return `<ul class="task-list">${items
+    .map((t) => `<li data-id="${esc(t.id)}" tabindex="0"><span class="dot ${t.status}"></span>
+      <span class="tl-title">${esc(t.title)}</span>${dueHtml(t)}</li>`)
+    .join('')}</ul>`;
+}
+
+function recentListHtml() {
+  const items = [...state.tasks].sort(SORTERS.updatedAt).slice(0, 6);
+  if (!items.length) return `<div class="panel-empty">No activity yet</div>`;
+  return `<ul class="task-list">${items
+    .map((t) => `<li data-id="${esc(t.id)}" tabindex="0">${statusHtml(t.status)}
+      <span class="tl-title">${esc(t.title)}</span>${projectHtml(t.project)}
+      <span class="tl-meta" title="${esc(fullTime(t.updatedAt))}">${esc(relTime(t.updatedAt))}</span></li>`)
+    .join('')}</ul>`;
+}
+
+/* ==========================================================================
+   Task drawer
+   ========================================================================== */
+const drawer = $('#drawer');
 const taskForm = $('#taskForm');
 let editingId = null;
 
-function openTaskDialog(task = null, defaults = {}) {
+function openTaskDrawer(task = null, defaults = {}) {
   editingId = task ? task.id : null;
-  const data = task || { title: '', description: '', status: 'todo', priority: 'medium', project: state.filters.project, dueDate: '', ...defaults };
-  $('#taskDialogTitle').textContent = task ? 'Edit task' : 'New task';
+  const data = task || { title: '', description: '', status: 'todo', priority: 'medium', project: '', dueDate: '', ...routeDefaults(), ...defaults };
+  $('#drawerLabel').textContent = task ? 'Task details' : 'New task';
   for (const name of ['title', 'description', 'status', 'priority', 'project', 'dueDate']) {
     taskForm.elements[name].value = data[name] || '';
   }
-  const delBtn = $('#deleteTaskBtn');
-  delBtn.hidden = !task;
-  delBtn.classList.remove('confirm');
-  delBtn.textContent = 'Delete';
-  $('#taskMeta').textContent = task && task.updatedAt ? `Last updated ${new Date(task.updatedAt).toLocaleString()}` : '';
-  taskDialog.showModal();
+  $('#deleteTaskBtn').hidden = !task;
+  $('#duplicateBtn').hidden = !task;
+  $('#taskMeta').innerHTML = task
+    ? `<dt>Created</dt><dd>${esc(fullTime(task.createdAt) || '—')}</dd>
+       <dt>Last updated</dt><dd>${esc(fullTime(task.updatedAt) || '—')}</dd>
+       <dt>Task ID</dt><dd><code>${esc(task.id)}</code></dd>`
+    : '';
+  if (!drawer.open) drawer.showModal();
   taskForm.elements.title.focus();
 }
 
@@ -385,23 +864,42 @@ taskForm.addEventListener('submit', (e) => {
   };
   const existing = state.tasks.find((t) => t.id === editingId);
   if (existing) saveTask({ ...existing, ...fields }, false);
-  else saveTask(normalize({ id: newId(), ...fields, createdAt: new Date().toISOString() }), true);
-  taskDialog.close();
+  else saveTask(newTask(fields), true).then((ok) => ok && toast('Task created'));
+  drawer.close();
 });
 
-$('#deleteTaskBtn').addEventListener('click', (e) => {
-  const btn = e.currentTarget;
-  // Two-step delete instead of a blocking confirm() dialog.
-  if (!btn.classList.contains('confirm')) {
-    btn.classList.add('confirm');
-    btn.textContent = 'Click again to delete';
-    return;
+taskForm.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    taskForm.requestSubmit();
   }
-  deleteTask(editingId);
-  taskDialog.close();
 });
 
-/* ---------- Settings dialog ---------- */
+$('#deleteTaskBtn').addEventListener('click', () => {
+  const id = editingId;
+  drawer.close();
+  deleteTasks(new Set([id]));
+});
+
+$('#duplicateBtn').addEventListener('click', () => {
+  const source = state.tasks.find((t) => t.id === editingId);
+  if (!source) return;
+  const copy = newTask({ ...source, id: newId(), title: `${source.title} (copy)`, status: 'todo', createdAt: new Date().toISOString() });
+  drawer.close();
+  saveTask(copy, true).then((ok) => ok && toast('Task duplicated', { action: { label: 'Open', run: () => openTaskDrawer(state.tasks.find((t) => t.id === copy.id)) } }));
+});
+
+// Close dialogs when clicking the backdrop.
+$$('dialog').forEach((d) =>
+  d.addEventListener('click', (e) => {
+    if (e.target === d) d.close();
+  }),
+);
+$$('[data-close]').forEach((b) => b.addEventListener('click', () => b.closest('dialog').close()));
+
+/* ==========================================================================
+   Settings
+   ========================================================================== */
 const settingsDialog = $('#settingsDialog');
 const settingsForm = $('#settingsForm');
 
@@ -415,7 +913,7 @@ function openSettings() {
 function setSettingsStatus(text, kind = '') {
   const el = $('#settingsStatus');
   el.textContent = text;
-  el.className = `small ${kind}`;
+  el.className = `settings-status ${kind}`;
 }
 
 function readSettingsForm() {
@@ -432,7 +930,7 @@ $('#testBtn').addEventListener('click', async () => {
   setSettingsStatus('Testing…');
   try {
     const { tasks } = await remoteCall('list', {}, config);
-    setSettingsStatus(`Connected. ${tasks.length} task(s) in the sheet.`, 'ok');
+    setSettingsStatus(`Connected. ${plural(tasks.length, 'task')} in the sheet.`, 'ok');
   } catch (err) {
     setSettingsStatus(`Failed: ${err.message}`, 'error');
   }
@@ -456,37 +954,233 @@ settingsForm.addEventListener('submit', (e) => {
 $('#disconnectBtn').addEventListener('click', () => {
   state.config = { url: '', token: '' };
   storageSet(CONFIG_KEY, state.config);
+  state.syncError = '';
   settingsDialog.close();
   loadTasks();
 });
 
-$$('[data-close]').forEach((b) => b.addEventListener('click', () => b.closest('dialog').close()));
+/* ==========================================================================
+   Command palette
+   ========================================================================== */
+const palette = $('#palette');
+const paletteInput = $('#paletteInput');
+let paletteItems = [];
+let paletteIndex = 0;
 
-/* ---------- Board / list interactions ---------- */
-const main = $('#main');
+function paletteCommands() {
+  const nav = SCOPES.map((s) => ({ group: 'Navigate', icon: s.icon, label: `Go to ${s.label}`, run: () => go({ scope: s.id }) }));
+  const proj = projects().map((p) => ({ group: 'Projects', icon: 'folder', label: p, run: () => go({ scope: 'project', project: p }) }));
+  const actions = [
+    { group: 'Actions', icon: 'plus', label: 'Create new task', hint: 'N', run: () => openTaskDrawer() },
+    { group: 'Actions', icon: 'board', label: 'Switch to board view', run: () => setView('board') },
+    { group: 'Actions', icon: 'table', label: 'Switch to table view', run: () => setView('table') },
+    { group: 'Actions', icon: 'sun', label: 'Light theme', run: () => setTheme('light') },
+    { group: 'Actions', icon: 'moon', label: 'Dark theme', run: () => setTheme('dark') },
+    { group: 'Actions', icon: 'monitor', label: 'System theme', run: () => setTheme('system') },
+    { group: 'Actions', icon: 'refresh', label: 'Refresh from Google Sheets', run: loadTasks },
+    { group: 'Actions', icon: 'settings', label: 'Connection settings', run: openSettings },
+  ];
+  return [...actions, ...nav, ...proj];
+}
 
-main.addEventListener('click', (e) => {
-  const add = e.target.closest('[data-add]');
-  if (add) return openTaskDialog(null, { status: add.dataset.add });
+function buildPalette() {
+  const q = paletteInput.value.trim().toLowerCase();
+  const commands = paletteCommands().filter((c) => !q || c.label.toLowerCase().includes(q));
+  const tasks = (q
+    ? state.tasks.filter((t) => `${t.title} ${t.project} ${t.description}`.toLowerCase().includes(q))
+    : [...state.tasks].sort(SORTERS.updatedAt)
+  )
+    .slice(0, q ? 8 : 5)
+    .map((t) => ({
+      group: q ? 'Tasks' : 'Recent tasks',
+      icon: t.status === 'done' ? 'done' : 'status',
+      label: t.title,
+      hint: t.project || STATUS_LABEL[t.status],
+      run: () => openTaskDrawer(state.tasks.find((x) => x.id === t.id)),
+    }));
+  paletteItems = q ? [...tasks, ...commands] : [...commands.slice(0, 1), ...tasks, ...commands.slice(1)];
+  paletteIndex = Math.min(paletteIndex, Math.max(paletteItems.length - 1, 0));
 
-  const item = e.target.closest('[data-id]');
+  if (!paletteItems.length) {
+    $('#paletteList').innerHTML = `<li class="palette-empty">No results for “${esc(paletteInput.value)}”</li>`;
+    return;
+  }
+  let lastGroup = '';
+  $('#paletteList').innerHTML = paletteItems
+    .map((item, i) => {
+      const header = item.group !== lastGroup ? `<li class="palette-group" role="presentation">${esc(item.group)}</li>` : '';
+      lastGroup = item.group;
+      return `${header}<li class="palette-item ${i === paletteIndex ? 'active' : ''}" role="option" data-index="${i}" aria-selected="${i === paletteIndex}">
+        ${icon(item.icon)}<span class="pi-label">${esc(item.label)}</span>${item.hint ? `<span class="pi-hint">${esc(item.hint)}</span>` : ''}</li>`;
+    })
+    .join('');
+  $('#paletteList .palette-item.active')?.scrollIntoView({ block: 'nearest' });
+}
+
+function openPalette() {
+  if (palette.open) return;
+  paletteInput.value = '';
+  paletteIndex = 0;
+  buildPalette();
+  palette.showModal();
+  paletteInput.focus();
+}
+
+function runPaletteItem(i) {
+  const item = paletteItems[i];
   if (!item) return;
-  const task = state.tasks.find((t) => t.id === item.dataset.id);
-  if (!task) return;
-  if (e.target.classList.contains('toggle')) {
-    setStatus(task.id, e.target.checked ? 'done' : 'todo');
-  } else {
-    openTaskDialog(task);
+  palette.close();
+  item.run();
+}
+
+paletteInput.addEventListener('input', () => {
+  paletteIndex = 0;
+  buildPalette();
+});
+paletteInput.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    const n = paletteItems.length;
+    if (!n) return;
+    paletteIndex = (paletteIndex + (e.key === 'ArrowDown' ? 1 : -1) + n) % n;
+    buildPalette();
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    runPaletteItem(paletteIndex);
+  }
+});
+$('#paletteList').addEventListener('click', (e) => {
+  const item = e.target.closest('.palette-item');
+  if (item) runPaletteItem(Number(item.dataset.index));
+});
+$('#paletteList').addEventListener('mousemove', (e) => {
+  const item = e.target.closest('.palette-item');
+  if (item && Number(item.dataset.index) !== paletteIndex) {
+    paletteIndex = Number(item.dataset.index);
+    $$('#paletteList .palette-item').forEach((el) => el.classList.toggle('active', Number(el.dataset.index) === paletteIndex));
   }
 });
 
-main.addEventListener('keydown', (e) => {
-  if (e.key !== 'Enter' || e.target.classList.contains('toggle')) return;
-  const item = e.target.closest('[data-id]');
-  const task = item && state.tasks.find((t) => t.id === item.dataset.id);
-  if (task) openTaskDialog(task);
+/* ==========================================================================
+   Theme & view
+   ========================================================================== */
+const THEME_ICON = { system: 'monitor', light: 'sun', dark: 'moon' };
+const THEME_NEXT = { system: 'light', light: 'dark', dark: 'system' };
+
+function applyTheme() {
+  const theme = state.prefs.theme;
+  if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+  else delete document.documentElement.dataset.theme;
+  const btn = $('#themeBtn');
+  btn.innerHTML = icon(THEME_ICON[theme] || 'monitor');
+  btn.title = `Theme: ${theme} (click to change)`;
+}
+
+function setTheme(theme) {
+  state.prefs.theme = theme;
+  savePrefs();
+  applyTheme();
+}
+
+function setView(view) {
+  state.prefs.view = view;
+  if (state.route.scope === 'dashboard') go({ scope: 'all' });
+  savePrefs();
+  render();
+}
+
+/* ==========================================================================
+   Main area interactions
+   ========================================================================== */
+const main = $('#main');
+
+main.addEventListener('click', (e) => {
+  const t = e.target;
+
+  const goScope = t.closest('[data-go]');
+  if (goScope) return go({ scope: goScope.dataset.go });
+  const goProject = t.closest('[data-go-project]');
+  if (goProject) return go({ scope: 'project', project: goProject.dataset.goProject });
+
+  const action = t.closest('[data-action]');
+  if (action) {
+    if (action.dataset.action === 'new') openTaskDrawer();
+    if (action.dataset.action === 'clear-filters') clearFilters();
+    return;
+  }
+
+  const quickOpen = t.closest('[data-quick-open]');
+  if (quickOpen) {
+    state.quickAdd = { status: quickOpen.dataset.quickOpen, text: '' };
+    return render();
+  }
+
+  const sort = t.closest('[data-sort]');
+  if (sort) {
+    const key = sort.dataset.sort;
+    const cur = state.prefs.sort;
+    state.prefs.sort = { key, dir: cur.key === key && cur.dir === 'asc' ? 'desc' : 'asc' };
+    savePrefs();
+    return render();
+  }
+
+  if (t.id === 'selectAll') {
+    const ids = visibleTasks().map((x) => x.id);
+    if (t.checked) ids.forEach((id) => state.selection.add(id));
+    else state.selection.clear();
+    return render();
+  }
+
+  const item = t.closest('[data-id]');
+  if (!item || t.closest('.quick-input')) return;
+  const task = state.tasks.find((x) => x.id === item.dataset.id);
+  if (!task) return;
+
+  if (t.classList.contains('row-select')) {
+    if (t.checked) state.selection.add(task.id);
+    else state.selection.delete(task.id);
+    return render();
+  }
+  if (t.classList.contains('toggle')) return setStatus(task.id, t.checked ? 'done' : 'todo');
+  if (t.closest('td.sel')) return; // padding around the row checkbox
+  openTaskDrawer(task);
 });
 
+main.addEventListener('keydown', (e) => {
+  const quick = e.target.closest('.quick-input');
+  if (quick) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      state.quickAdd = null;
+      render();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const title = quick.value.trim();
+      if (!title) return;
+      state.quickAdd.text = '';
+      saveTask(newTask({ title, status: quick.dataset.quick, ...routeDefaults() }), true);
+    }
+    return;
+  }
+  if (e.key !== 'Enter' || e.target.matches('input, button, a')) return;
+  const item = e.target.closest('[data-id]');
+  const task = item && state.tasks.find((t) => t.id === item.dataset.id);
+  if (task) openTaskDrawer(task);
+});
+
+main.addEventListener('input', (e) => {
+  if (e.target.classList.contains('quick-input') && state.quickAdd) state.quickAdd.text = e.target.value;
+});
+main.addEventListener('focusout', (e) => {
+  const quick = e.target.closest('.quick-input');
+  // Close an empty composer when focus leaves it (but not during re-render).
+  if (quick && !quick.value.trim() && e.relatedTarget && !main.contains(e.relatedTarget)) {
+    state.quickAdd = null;
+    render();
+  }
+});
+
+/* ---------- Drag and drop ---------- */
 main.addEventListener('dragstart', (e) => {
   const card = e.target.closest('.card');
   if (!card) return;
@@ -494,7 +1188,10 @@ main.addEventListener('dragstart', (e) => {
   e.dataTransfer.effectAllowed = 'move';
   card.classList.add('dragging');
 });
-main.addEventListener('dragend', (e) => e.target.closest('.card')?.classList.remove('dragging'));
+main.addEventListener('dragend', (e) => {
+  e.target.closest('.card')?.classList.remove('dragging');
+  $$('.column-body.drop-target').forEach((z) => z.classList.remove('drop-target'));
+});
 main.addEventListener('dragover', (e) => {
   const zone = e.target.closest('.column-body');
   if (!zone) return;
@@ -514,13 +1211,43 @@ main.addEventListener('drop', (e) => {
   setStatus(e.dataTransfer.getData('text/plain'), zone.dataset.status);
 });
 
-/* ---------- Toolbar ---------- */
+/* ---------- Chart tooltips ---------- */
+const tooltip = $('#tooltip');
+function showTip(el, x, y) {
+  tooltip.textContent = el.dataset.tip;
+  tooltip.classList.add('show');
+  const { width, height } = tooltip.getBoundingClientRect();
+  const left = Math.min(Math.max(8, x - width / 2), window.innerWidth - width - 8);
+  const top = y - height - 12 < 8 ? y + 16 : y - height - 12;
+  tooltip.style.left = `${left}px`;
+  tooltip.style.top = `${top}px`;
+}
+main.addEventListener('mousemove', (e) => {
+  const el = e.target.closest('[data-tip]');
+  if (el) showTip(el, e.clientX, e.clientY);
+  else tooltip.classList.remove('show');
+});
+main.addEventListener('mouseleave', () => tooltip.classList.remove('show'));
+main.addEventListener('focusin', (e) => {
+  const el = e.target.closest('[data-tip]');
+  if (!el) return;
+  const r = el.getBoundingClientRect();
+  showTip(el, r.left + r.width / 2, r.top);
+});
+main.addEventListener('focusout', () => tooltip.classList.remove('show'));
+
+/* ==========================================================================
+   Toolbar, header, sidebar
+   ========================================================================== */
+function clearFilters() {
+  state.filters = { search: '', priority: '' };
+  $('#search').value = '';
+  $('#priorityFilter').value = '';
+  render();
+}
+
 $('#search').addEventListener('input', (e) => {
   state.filters.search = e.target.value;
-  render();
-});
-$('#projectFilter').addEventListener('change', (e) => {
-  state.filters.project = e.target.value;
   render();
 });
 $('#priorityFilter').addEventListener('change', (e) => {
@@ -529,51 +1256,104 @@ $('#priorityFilter').addEventListener('change', (e) => {
 });
 $('#hideDone').addEventListener('change', (e) => {
   state.prefs.hideDone = e.target.checked;
-  storageSet(PREFS_KEY, state.prefs);
+  savePrefs();
   render();
 });
-$$('.segmented button').forEach((b) =>
-  b.addEventListener('click', () => {
-    state.prefs.view = b.dataset.view;
-    storageSet(PREFS_KEY, state.prefs);
-    render();
-  }),
-);
+$$('#viewSwitch button').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
 
-$('#newTaskBtn').addEventListener('click', () => openTaskDialog());
+$('#bulkbar').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-bulk]');
+  if (!btn) return;
+  const ids = new Set(state.selection);
+  if (btn.dataset.bulk === 'done') bulkUpdate(ids, { status: 'done' });
+  if (btn.dataset.bulk === 'delete') deleteTasks(ids);
+  if (btn.dataset.bulk === 'clear') {
+    state.selection.clear();
+    render();
+  }
+});
+$('#bulkStatus').addEventListener('change', (e) => {
+  if (e.target.value) bulkUpdate(new Set(state.selection), { status: e.target.value });
+  e.target.value = '';
+});
+$('#bulkPriority').addEventListener('change', (e) => {
+  if (e.target.value) bulkUpdate(new Set(state.selection), { priority: e.target.value });
+  e.target.value = '';
+});
+
+$('#newTaskBtn').addEventListener('click', () => openTaskDrawer());
 $('#refreshBtn').addEventListener('click', loadTasks);
+$('#themeBtn').addEventListener('click', () => setTheme(THEME_NEXT[state.prefs.theme] || 'system'));
 $('#settingsBtn').addEventListener('click', openSettings);
 $('#bannerConnectBtn').addEventListener('click', openSettings);
 $('#errorSettingsBtn').addEventListener('click', openSettings);
 $('#errorRetryBtn').addEventListener('click', loadTasks);
+$('#paletteBtn').addEventListener('click', openPalette);
+$('#menuBtn').addEventListener('click', () => $('#app').classList.add('nav-open'));
+$('#scrim').addEventListener('click', () => $('#app').classList.remove('nav-open'));
 
 document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    return openPalette();
+  }
   const typing = e.target.closest('input, textarea, select, [contenteditable]');
   if (typing || e.ctrlKey || e.metaKey || e.altKey || document.querySelector('dialog[open]')) return;
   if (e.key === 'n') {
     e.preventDefault();
-    openTaskDialog();
+    openTaskDrawer();
   } else if (e.key === '/') {
+    if (state.route.scope === 'dashboard') return;
     e.preventDefault();
     $('#search').focus();
+  } else if (e.key === 'Escape' && state.selection.size) {
+    state.selection.clear();
+    render();
   }
 });
 
 // Pick up edits made directly in the sheet (or on another device) when returning to the tab.
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && isRemote() && !state.pending) loadTasks();
+  if (document.visibilityState === 'visible' && isRemote() && !state.pending && !drawer.open) loadTasks();
 });
 
-/* ---------- Toast ---------- */
-let toastTimer;
-function toast(message, isError = false) {
-  const el = $('#toast');
-  el.textContent = message;
-  el.classList.toggle('error', isError);
-  el.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), isError ? 5000 : 2500);
+/* ==========================================================================
+   Toasts
+   ========================================================================== */
+function toast(message, { error = false, action = null } = {}) {
+  const el = document.createElement('div');
+  el.className = `toast ${error ? 'error' : ''}`;
+  el.setAttribute('role', error ? 'alert' : 'status');
+  el.innerHTML = `<span>${esc(message)}</span>`;
+  const dismiss = () => el.remove();
+  if (action) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = action.label;
+    btn.addEventListener('click', () => {
+      dismiss();
+      action.run();
+    });
+    el.appendChild(btn);
+  }
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.setAttribute('aria-label', 'Dismiss');
+  close.innerHTML = icon('x');
+  close.addEventListener('click', dismiss);
+  el.appendChild(close);
+  $('#toasts').appendChild(el);
+  setTimeout(dismiss, error ? 7000 : action ? 6000 : 3000);
 }
+
+/* ==========================================================================
+   Boot
+   ========================================================================== */
+// The indeterminate state can't be set from markup; apply it after each render.
+new MutationObserver(() => {
+  const all = $('#selectAll');
+  if (all) all.indeterminate = all.dataset.indeterminate === 'true';
+}).observe(main, { childList: true });
 
 render();
 loadTasks();

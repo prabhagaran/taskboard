@@ -4,130 +4,264 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TaskBoard</title>
-  <meta name="description" content="Personal task tracker backed by Google Sheets">
+  <meta name="description" content="Task management workspace backed by Google Sheets">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect width='24' height='24' rx='6' fill='%234f46e5'/><path d='M7 12.5l3 3 7-7' stroke='white' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
-  <link rel="stylesheet" href="styles.css?v=3">
+  <script>
+    // Apply the saved theme before first paint to avoid a flash.
+    try {
+      const t = JSON.parse(localStorage.getItem('taskboard.prefs') || '{}').theme;
+      if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+    } catch (e) { /* storage unavailable */ }
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="styles.css?v=4">
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <span class="logo" aria-hidden="true">
-        <svg viewBox="0 0 24 24"><path d="M7 12.5l3 3 7-7"/></svg>
-      </span>
-      <span>TaskBoard</span>
-    </div>
-    <div id="sync" class="sync" aria-live="polite"></div>
-    <div class="top-actions">
-      <button id="refreshBtn" class="icon-btn" title="Refresh" aria-label="Refresh">
-        <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>
-      </button>
-      <button id="settingsBtn" class="icon-btn" title="Settings" aria-label="Settings">
-        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
-      </button>
-      <button id="newTaskBtn" class="btn primary" title="New task (N)">
-        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
-        <span>New task</span>
-      </button>
-    </div>
-  </header>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
+      <symbol id="i-dashboard" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></symbol>
+      <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M3 13l2.5-7.5A2 2 0 0 1 7.4 4h9.2a2 2 0 0 1 1.9 1.5L21 13v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M3 13h5l1.5 3h5L16 13h5"/></symbol>
+      <symbol id="i-today" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="16.5" rx="2"/><path d="M3 9.5h18M8 3v3M16 3v3"/><circle cx="12" cy="15" r="2"/></symbol>
+      <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="16.5" rx="2"/><path d="M3 9.5h18M8 3v3M16 3v3M7.5 13.5h2M11 13.5h2M14.5 13.5h2M7.5 17h2M11 17h2"/></symbol>
+      <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5v.01"/></symbol>
+      <symbol id="i-done" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.8 2.8L16 10"/></symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+      <symbol id="i-board" viewBox="0 0 24 24"><rect x="3" y="4" width="5" height="16" rx="1.5"/><rect x="10" y="4" width="5" height="11" rx="1.5"/><rect x="17" y="4" width="4" height="7" rx="1.5"/></symbol>
+      <symbol id="i-table" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9.5h18M3 15h18M9 9.5V20"/></symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6l1.4 1.4M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4L6 18M18 6l1.4-1.4"/></symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/></symbol>
+      <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></symbol>
+      <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4.5A1.5 1.5 0 0 1 10.5 3h3A1.5 1.5 0 0 1 15 4.5V7"/></symbol>
+      <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></symbol>
+      <symbol id="i-flag" viewBox="0 0 24 24"><path d="M5 21V4M5 4h11l-2 4 2 4H5"/></symbol>
+      <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+      <symbol id="i-status" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"/></symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+      <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
+      <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></symbol>
+      <symbol id="i-sort" viewBox="0 0 24 24"><path d="M8 9l4-4 4 4M8 15l4 4 4-4"/></symbol>
+      <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></symbol>
+      <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+    </defs>
+  </svg>
 
-  <div id="setupBanner" class="banner" hidden>
-    <span><strong>Local mode:</strong> tasks are saved in this browser only.</span>
-    <button id="bannerConnectBtn" class="btn small">Connect Google Sheet</button>
-  </div>
-
-  <div id="errorBanner" class="banner error" hidden>
-    <span id="errorText"></span>
-    <button id="errorSettingsBtn" class="btn small">Open settings</button>
-    <button id="errorRetryBtn" class="btn small">Retry</button>
-  </div>
-
-  <section class="toolbar">
-    <div id="stats" class="stats"></div>
-    <div class="filters">
-      <input id="search" type="search" placeholder="Search tasks  ( / )" aria-label="Search tasks">
-      <select id="projectFilter" aria-label="Filter by project"></select>
-      <select id="priorityFilter" aria-label="Filter by priority">
-        <option value="">All priorities</option>
-        <option value="high">High</option>
-        <option value="medium">Medium</option>
-        <option value="low">Low</option>
-      </select>
-      <label class="check"><input id="hideDone" type="checkbox"> Hide done</label>
-      <div class="segmented" role="tablist" aria-label="View">
-        <button data-view="board" role="tab">Board</button>
-        <button data-view="list" role="tab">List</button>
+  <div class="app" id="app">
+    <aside class="sidebar" id="sidebar" aria-label="Navigation">
+      <div class="sb-brand">
+        <span class="logo" aria-hidden="true"><svg class="i"><use href="#i-check"/></svg></span>
+        <div class="sb-brand-text">
+          <strong>TaskBoard</strong>
+          <span>Workspace</span>
+        </div>
       </div>
+
+      <button class="sb-search" id="paletteBtn" type="button">
+        <svg class="i"><use href="#i-search"/></svg>
+        <span>Search or jump to…</span>
+        <kbd>Ctrl K</kbd>
+      </button>
+
+      <nav class="sb-nav" id="navMain"></nav>
+
+      <div class="sb-section">
+        <span>Projects</span>
+      </div>
+      <nav class="sb-nav" id="navProjects"></nav>
+
+      <div class="sb-footer">
+        <div id="sync" class="sync" aria-live="polite"></div>
+        <button class="sb-link" id="settingsBtn" type="button">
+          <svg class="i"><use href="#i-settings"/></svg>
+          <span>Connection settings</span>
+        </button>
+      </div>
+    </aside>
+    <div class="scrim" id="scrim"></div>
+
+    <div class="content">
+      <header class="header">
+        <button class="icon-btn menu-btn" id="menuBtn" type="button" aria-label="Open navigation">
+          <svg class="i"><use href="#i-menu"/></svg>
+        </button>
+        <div class="title-block">
+          <div class="crumbs" id="crumbs">Tasks</div>
+          <h1 id="pageTitle">All tasks</h1>
+        </div>
+        <div class="header-actions">
+          <button class="icon-btn" id="refreshBtn" type="button" title="Refresh" aria-label="Refresh">
+            <svg class="i"><use href="#i-refresh"/></svg>
+          </button>
+          <button class="icon-btn" id="themeBtn" type="button" aria-label="Change theme">
+            <svg class="i"><use href="#i-monitor"/></svg>
+          </button>
+          <button class="btn primary" id="newTaskBtn" type="button">
+            <svg class="i"><use href="#i-plus"/></svg>
+            <span>New task</span>
+            <kbd>N</kbd>
+          </button>
+        </div>
+      </header>
+
+      <div id="setupBanner" class="banner info" hidden>
+        <svg class="i"><use href="#i-link"/></svg>
+        <span><strong>Local mode.</strong> Tasks are stored in this browser only. Connect a Google Sheet to sync across devices.</span>
+        <button id="bannerConnectBtn" class="btn small" type="button">Connect Google Sheet</button>
+      </div>
+      <div id="errorBanner" class="banner error" hidden>
+        <svg class="i"><use href="#i-alert"/></svg>
+        <span id="errorText"></span>
+        <button id="errorSettingsBtn" class="btn small" type="button">Open settings</button>
+        <button id="errorRetryBtn" class="btn small" type="button">Retry</button>
+      </div>
+
+      <div class="toolbar" id="toolbar">
+        <div class="search-field">
+          <svg class="i"><use href="#i-search"/></svg>
+          <input id="search" type="search" placeholder="Filter tasks" aria-label="Filter tasks" autocomplete="off">
+          <kbd>/</kbd>
+        </div>
+        <select id="priorityFilter" class="select" aria-label="Filter by priority">
+          <option value="">Any priority</option>
+          <option value="high">High priority</option>
+          <option value="medium">Medium priority</option>
+          <option value="low">Low priority</option>
+        </select>
+        <label class="switch" id="hideDoneWrap">
+          <input id="hideDone" type="checkbox">
+          <span class="track" aria-hidden="true"></span>
+          Hide completed
+        </label>
+        <span class="spacer"></span>
+        <span id="resultCount" class="result-count"></span>
+        <div class="segmented" id="viewSwitch" role="tablist" aria-label="View">
+          <button data-view="board" role="tab" type="button"><svg class="i"><use href="#i-board"/></svg>Board</button>
+          <button data-view="table" role="tab" type="button"><svg class="i"><use href="#i-table"/></svg>Table</button>
+        </div>
+      </div>
+
+      <div class="bulkbar" id="bulkbar" hidden>
+        <span id="bulkCount"></span>
+        <button class="btn small" data-bulk="done" type="button"><svg class="i"><use href="#i-done"/></svg>Mark done</button>
+        <select class="select small" id="bulkStatus" aria-label="Set status">
+          <option value="">Set status…</option>
+          <option value="todo">To Do</option>
+          <option value="inprogress">In Progress</option>
+          <option value="done">Done</option>
+        </select>
+        <select class="select small" id="bulkPriority" aria-label="Set priority">
+          <option value="">Set priority…</option>
+          <option value="high">High</option>
+          <option value="medium">Medium</option>
+          <option value="low">Low</option>
+        </select>
+        <button class="btn small danger" data-bulk="delete" type="button"><svg class="i"><use href="#i-trash"/></svg>Delete</button>
+        <span class="spacer"></span>
+        <button class="btn small ghost" data-bulk="clear" type="button">Clear selection</button>
+      </div>
+
+      <main id="main" class="main"></main>
     </div>
-  </section>
+  </div>
 
-  <main id="main"></main>
-
-  <dialog id="taskDialog">
+  <dialog id="drawer" class="drawer" aria-labelledby="drawerLabel">
     <form id="taskForm" method="dialog">
-      <h2 id="taskDialogTitle">New task</h2>
-      <label>Title
-        <input name="title" required maxlength="500" autocomplete="off">
-      </label>
-      <label>Description
-        <textarea name="description" rows="4"></textarea>
-      </label>
-      <div class="grid2">
-        <label>Status
-          <select name="status">
-            <option value="todo">To Do</option>
-            <option value="inprogress">In Progress</option>
-            <option value="done">Done</option>
-          </select>
-        </label>
-        <label>Priority
-          <select name="priority">
-            <option value="high">High</option>
-            <option value="medium">Medium</option>
-            <option value="low">Low</option>
-          </select>
-        </label>
-        <label>Project
-          <input name="project" list="projectList" autocomplete="off">
-        </label>
-        <label>Due date
-          <input name="dueDate" type="date">
-        </label>
+      <div class="drawer-head">
+        <span id="drawerLabel" class="drawer-label">New task</span>
+        <span class="spacer"></span>
+        <button type="button" class="icon-btn ghost" id="duplicateBtn" title="Duplicate" aria-label="Duplicate task"><svg class="i"><use href="#i-copy"/></svg></button>
+        <button type="button" class="icon-btn ghost" id="deleteTaskBtn" title="Delete" aria-label="Delete task"><svg class="i"><use href="#i-trash"/></svg></button>
+        <button type="button" class="icon-btn ghost" data-close title="Close" aria-label="Close"><svg class="i"><use href="#i-x"/></svg></button>
       </div>
-      <datalist id="projectList"></datalist>
-      <p id="taskMeta" class="muted small"></p>
-      <div class="dialog-actions">
-        <button type="button" id="deleteTaskBtn" class="btn danger">Delete</button>
+      <div class="drawer-body">
+        <input name="title" class="title-input" placeholder="Task title" required maxlength="500" autocomplete="off" aria-label="Title">
+        <div class="props">
+          <label class="prop">
+            <span class="prop-label"><svg class="i"><use href="#i-status"/></svg>Status</span>
+            <select name="status" class="select">
+              <option value="todo">To Do</option>
+              <option value="inprogress">In Progress</option>
+              <option value="done">Done</option>
+            </select>
+          </label>
+          <label class="prop">
+            <span class="prop-label"><svg class="i"><use href="#i-flag"/></svg>Priority</span>
+            <select name="priority" class="select">
+              <option value="high">High</option>
+              <option value="medium">Medium</option>
+              <option value="low">Low</option>
+            </select>
+          </label>
+          <label class="prop">
+            <span class="prop-label"><svg class="i"><use href="#i-folder"/></svg>Project</span>
+            <input name="project" class="input" list="projectList" placeholder="No project" autocomplete="off">
+          </label>
+          <label class="prop">
+            <span class="prop-label"><svg class="i"><use href="#i-calendar"/></svg>Due date</span>
+            <input name="dueDate" class="input" type="date">
+          </label>
+        </div>
+        <datalist id="projectList"></datalist>
+        <label class="field">
+          <span>Description</span>
+          <textarea name="description" class="input" rows="9" placeholder="Add details, links, acceptance criteria…"></textarea>
+        </label>
+        <dl class="meta" id="taskMeta"></dl>
+      </div>
+      <div class="drawer-foot">
+        <span class="hint"><kbd>Ctrl</kbd> <kbd>Enter</kbd> to save</span>
         <span class="spacer"></span>
         <button type="button" class="btn" data-close>Cancel</button>
-        <button type="submit" class="btn primary">Save</button>
+        <button type="submit" class="btn primary">Save task</button>
       </div>
     </form>
   </dialog>
 
-  <dialog id="settingsDialog">
+  <dialog id="settingsDialog" class="modal" aria-labelledby="settingsTitle">
     <form id="settingsForm" method="dialog">
-      <h2>Connect Google Sheet</h2>
-      <p class="muted small">Paste the Apps Script web app URL and the API token from <code>setup()</code>.
-        Both are stored only in this browser. See the README for setup steps.</p>
-      <label>Web app URL
-        <input name="url" type="url" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="off">
+      <div class="modal-head">
+        <h2 id="settingsTitle">Connect Google Sheet</h2>
+        <button type="button" class="icon-btn ghost" data-close aria-label="Close"><svg class="i"><use href="#i-x"/></svg></button>
+      </div>
+      <p class="muted">Paste the Apps Script web app URL and the API token printed by <code>setup()</code>.
+        Both are stored only in this browser.</p>
+      <label class="field">
+        <span>Web app URL</span>
+        <input name="url" class="input" type="url" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off">
       </label>
-      <label>API token
-        <input name="token" type="password" autocomplete="off">
+      <label class="field">
+        <span>API token</span>
+        <input name="token" class="input" type="password" autocomplete="off">
       </label>
-      <p id="settingsStatus" class="small"></p>
-      <div class="dialog-actions">
-        <button type="button" id="disconnectBtn" class="btn">Use local mode</button>
+      <p id="settingsStatus" class="settings-status"></p>
+      <div class="modal-foot">
+        <button type="button" id="disconnectBtn" class="btn ghost">Use local mode</button>
         <span class="spacer"></span>
-        <button type="button" id="testBtn" class="btn">Test</button>
+        <button type="button" id="testBtn" class="btn">Test connection</button>
         <button type="submit" class="btn primary">Save</button>
       </div>
     </form>
   </dialog>
 
-  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <dialog id="palette" class="palette" aria-label="Command palette">
+    <div class="palette-input">
+      <svg class="i"><use href="#i-search"/></svg>
+      <input id="paletteInput" placeholder="Search tasks, projects and commands…" autocomplete="off" aria-controls="paletteList">
+      <kbd>Esc</kbd>
+    </div>
+    <ul id="paletteList" class="palette-list" role="listbox"></ul>
+  </dialog>
 
-  <script src="app.js?v=3"></script>
+  <div id="tooltip" class="tooltip" role="tooltip"></div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <script src="app.js?v=4"></script>
 </body>
 </html>
