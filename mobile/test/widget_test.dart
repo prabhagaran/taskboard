@@ -37,6 +37,33 @@ void main() {
     });
   });
 
+  group('Task fields', () {
+    test('keeps new fields through JSON and tolerates older sheets', () {
+      const task = Task(id: 'a', title: 'x', tags: 'home, urgent', links: 'https://a.example', sortOrder: '1536.5');
+      expect(Task.fromJson(task.toJson()).toJson(), task.toJson());
+      final old = Task.fromJson({'id': 'b', 'title': 'x'});
+      expect(old.tagList, isEmpty);
+      expect(old.linkList, isEmpty);
+      expect(old.order, isNull);
+    });
+
+    test('normalizes tags and drops unsafe links', () {
+      expect(cleanTags(' a , b ,, '), 'a, b');
+      expect(const Task(id: 'a', title: 'x', tags: 'a, b').tagList, ['a', 'b']);
+      expect(cleanLinks('https://a.example\njavascript:alert(1)\n  http://b.example '), 'https://a.example\nhttp://b.example');
+      expect(const Task(id: 'a', title: 'x', links: 'file:///etc/hosts\nHTTPS://c.example').linkList, ['HTTPS://c.example']);
+    });
+
+    test('places hand-ordered tasks first, then by urgency', () {
+      const placed = Task(id: 'p', title: 'x', priority: TaskPriority.low, sortOrder: '2048');
+      const earlier = Task(id: 'e', title: 'x', priority: TaskPriority.low, sortOrder: '1024');
+      const urgent = Task(id: 'u', title: 'x', priority: TaskPriority.high);
+      const relaxed = Task(id: 'r', title: 'x', priority: TaskPriority.low);
+      final sorted = [relaxed, placed, urgent, earlier]..sort(compareManual);
+      expect(sorted.map((t) => t.id), ['e', 'p', 'u', 'r']);
+    });
+  });
+
   group('TaskApi', () {
     test('follows the Apps Script redirect after a POST', () async {
       final calls = <String>[];

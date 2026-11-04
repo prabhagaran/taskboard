@@ -30,7 +30,10 @@ class DashboardScreen extends StatelessWidget {
               onRefresh: store.refresh,
               child: ListView(
                 physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.all(16),
+                padding: EdgeInsets.symmetric(
+                  horizontal: max(16, (MediaQuery.sizeOf(context).width - 860) / 2),
+                  vertical: 16,
+                ),
                 children: [
                   Row(
                     children: [

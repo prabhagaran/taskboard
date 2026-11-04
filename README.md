@@ -7,6 +7,10 @@ A lightweight personal task manager. The frontend is a static site (hosted free 
 - **Board:** drag and drop between To Do, In Progress and Done, plus inline quick-add in each column
 - **Table:** sortable columns, multi-select, and bulk actions (mark done, set status or priority, delete)
 - **Task panel:** a side drawer with every field, timestamps, duplicate and delete (with undo)
+- **Calendar:** month view of due dates, plus one-way sync into a separate Google Calendar
+- **Tags and saved filters:** label tasks and keep filter combinations (saved per device)
+- **Links:** attach Google Drive files or any web link to a task
+- **Task history:** every change is logged to a `History` sheet and shown on the task
 - **Command palette** (`Ctrl K`): jump to any task, project or view
 - Light, dark and system themes; works on phones
 - Every task is a row in your Google Sheet, so you can also edit, sort, or chart it there
@@ -31,6 +35,8 @@ GitHub Pages (index.html, app.js)  ──POST JSON──▶  Apps Script web app
 
 > "Anyone" means the URL is reachable without a Google login. Every request still needs the API token, so keep the token private. If it ever leaks, run `rotateToken()` in Apps Script and enter the new token in the app.
 
+**Optional: Google Calendar sync.** Run `setupCalendarSync` once in Apps Script and approve the Calendar permission. Open tasks with due dates then sync hourly into a separate calendar named TaskBoard. Run it before deploying a new version, so the web app is not left waiting for that approval.
+
 **After changing `Code.gs` later:** use **Deploy → Manage deployments → Edit (pencil) → Version: New version**. This keeps the same URL.
 
 ## 2. Host the app on GitHub Pages
@@ -54,7 +60,7 @@ Repeat this once on each browser or device you use.
 
 ## Android app
 
-[`mobile/`](mobile/) is a Flutter app that uses the same Google Sheet and web app. It has Today, Tasks, and Dashboard screens, swipe to complete or delete, and shows your last synced tasks when offline (changes need a connection).
+[`mobile/`](mobile/) is a Flutter app that uses the same Google Sheet and web app. It has Today, Tasks, Calendar, and Dashboard screens, a home-screen widget for today's tasks, swipe to complete or delete, hold and drag to reorder, and a tablet layout. It shows your last synced tasks when offline (changes need a connection).
 
 ```bash
 cd mobile
@@ -66,14 +72,23 @@ Copy the APK to your phone, open it, and allow installs from that source. On fir
 
 ## Sheet format
 
-| id | title | description | status | priority | project | dueDate | createdAt | updatedAt |
-|----|-------|-------------|--------|----------|---------|---------|-----------|-----------|
+| id | title | description | status | priority | project | dueDate | createdAt | updatedAt | tags | links | sortOrder |
+|----|-------|-------------|--------|----------|---------|---------|-----------|-----------|------|-------|-----------|
+
+Older sheets gain the last three columns automatically the first time the new script runs.
 
 - `status`: `todo`, `inprogress`, `done`
 - `priority`: `low`, `medium`, `high`
 - `dueDate`: `YYYY-MM-DD`
+- `tags`: comma-separated
+- `links`: one http(s) link per line
+- `sortOrder`: position set by dragging; leave blank
 
 You can edit rows directly in the sheet. The app picks up changes when you click refresh or switch back to its tab.
+
+## Using it with several people
+
+Each person sets up their own copy: their own Google Sheet, Apps Script deployment and token. Tasks are never shared between copies, and everyone can use the same website and app by entering their own URL and token.
 
 ## Run locally
 

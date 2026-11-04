@@ -140,6 +140,10 @@ class TaskTile extends StatelessWidget {
                 ),
               if (task.project.isNotEmpty)
                 _Meta(icon: Icons.folder_outlined, label: task.project),
+              if (task.tagList.isNotEmpty)
+                _Meta(icon: Icons.sell_outlined, label: task.tagList.join(', ')),
+              if (task.linkList.isNotEmpty)
+                _Meta(icon: Icons.link, label: '${task.linkList.length}'),
             ],
           ),
         ),

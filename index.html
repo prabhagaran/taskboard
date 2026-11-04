@@ -16,7 +16,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
-  <link rel="stylesheet" href="styles.css?v=5">
+  <link rel="stylesheet" href="styles.css?v=6">
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -49,6 +49,10 @@
       <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></symbol>
       <symbol id="i-sort" viewBox="0 0 24 24"><path d="M8 9l4-4 4 4M8 15l4 4 4-4"/></symbol>
       <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></symbol>
+      <symbol id="i-tag" viewBox="0 0 24 24"><path d="M3 12V5a2 2 0 0 1 2-2h7l9 9-9 9z"/><circle cx="8" cy="8" r="1.5"/></symbol>
+      <symbol id="i-bookmark" viewBox="0 0 24 24"><path d="M6 4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v17l-6-4-6 4z"/></symbol>
+      <symbol id="i-left" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></symbol>
+      <symbol id="i-right" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
       <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
     </defs>
   </svg>
@@ -75,6 +79,11 @@
         <span>Projects</span>
       </div>
       <nav class="sb-nav" id="navProjects"></nav>
+
+      <div class="sb-section" id="savedHead" hidden>
+        <span>Saved filters</span>
+      </div>
+      <nav class="sb-nav" id="navSaved"></nav>
 
       <div class="sb-footer">
         <div id="sync" class="sync" aria-live="polite"></div>
@@ -134,6 +143,8 @@
           <option value="medium">Medium priority</option>
           <option value="low">Low priority</option>
         </select>
+        <select id="tagFilter" class="select" aria-label="Filter by tag"></select>
+        <button id="saveFilterBtn" class="btn" type="button" hidden><svg class="i"><use href="#i-bookmark"/></svg>Save filter</button>
         <label class="switch" id="hideDoneWrap">
           <input id="hideDone" type="checkbox">
           <span class="track" aria-hidden="true"></span>
@@ -144,6 +155,7 @@
         <div class="segmented" id="viewSwitch" role="tablist" aria-label="View">
           <button data-view="board" role="tab" type="button"><svg class="i"><use href="#i-board"/></svg>Board</button>
           <button data-view="table" role="tab" type="button"><svg class="i"><use href="#i-table"/></svg>Table</button>
+          <button data-view="calendar" role="tab" type="button"><svg class="i"><use href="#i-calendar"/></svg>Calendar</button>
         </div>
       </div>
 
@@ -207,13 +219,26 @@
             <span class="prop-label"><svg class="i"><use href="#i-calendar"/></svg>Due date</span>
             <input name="dueDate" class="input" type="date">
           </label>
+          <label class="prop">
+            <span class="prop-label"><svg class="i"><use href="#i-tag"/></svg>Tags</span>
+            <input name="tags" class="input" placeholder="home, urgent" autocomplete="off">
+          </label>
         </div>
         <datalist id="projectList"></datalist>
         <label class="field">
           <span>Description</span>
           <textarea name="description" class="input" rows="9" placeholder="Add details, links, acceptance criteria…"></textarea>
         </label>
+        <label class="field">
+          <span>Links</span>
+          <textarea name="links" class="input" rows="3" placeholder="One https:// link per line, such as a Google Drive file"></textarea>
+        </label>
+        <ul class="link-list" id="taskLinks"></ul>
         <dl class="meta" id="taskMeta"></dl>
+        <section class="history" id="taskHistory" hidden>
+          <h3>History</h3>
+          <ol id="historyList"></ol>
+        </section>
       </div>
       <div class="drawer-foot">
         <span class="hint"><kbd>Ctrl</kbd> <kbd>Enter</kbd> to save</span>
@@ -250,6 +275,25 @@
     </form>
   </dialog>
 
+  <dialog id="saveFilterDialog" class="modal" aria-labelledby="saveFilterTitle">
+    <form id="saveFilterForm" method="dialog">
+      <div class="modal-head">
+        <h2 id="saveFilterTitle">Save filter</h2>
+        <button type="button" class="icon-btn ghost" data-close aria-label="Close"><svg class="i"><use href="#i-x"/></svg></button>
+      </div>
+      <p class="muted">Saves the current list, search, priority and tag on this device.</p>
+      <label class="field">
+        <span>Name</span>
+        <input name="name" class="input" required maxlength="60" autocomplete="off">
+      </label>
+      <div class="modal-foot">
+        <span class="spacer"></span>
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="palette" class="palette" aria-label="Command palette">
     <div class="palette-input">
       <svg class="i"><use href="#i-search"/></svg>
@@ -262,6 +306,6 @@
   <div id="tooltip" class="tooltip" role="tooltip"></div>
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
-  <script src="app.js?v=5"></script>
+  <script src="app.js?v=6"></script>
 </body>
 </html>

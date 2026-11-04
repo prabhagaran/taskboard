@@ -279,7 +279,7 @@ textarea.input { height: auto; padding: 8px 10px; resize: vertical; line-height:
 /* ==========================================================================
    Board
    ========================================================================== */
-.board { display: grid; grid-template-columns: repeat(3, minmax(260px, 1fr)); gap: 16px; align-items: start; }
+.board { display: grid; grid-template-columns: repeat(3, minmax(220px, 1fr)); gap: 16px; align-items: start; }
 .column { display: flex; flex-direction: column; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-lg); min-height: 240px; }
 .column-head { display: flex; align-items: center; gap: 8px; padding: 12px 12px 10px 14px; }
 .column-head h2 { font-size: 13px; font-weight: 600; }
@@ -299,14 +299,16 @@ textarea.input { height: auto; padding: 8px 10px; resize: vertical; line-height:
 }
 .card:hover { border-color: var(--border-strong); box-shadow: var(--shadow-md); }
 .card.dragging { opacity: 0.45; }
-.card-top { display: flex; align-items: center; gap: 8px; min-height: 20px; margin-bottom: 4px; }
+.card.drop-before { box-shadow: 0 -3px 0 0 var(--accent); }
+.column-body.drop-end > .quick-add, .column-body.drop-end > .quick-input { box-shadow: 0 -3px 0 0 var(--accent); }
+.card-top { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; min-height: 20px; margin-bottom: 4px; }
 .card-row { display: flex; gap: 8px; align-items: flex-start; }
 .card-row .checkbox { margin-top: 2px; }
 .card-title { margin: 0; font-size: 13.5px; font-weight: 550; line-height: 1.4; overflow-wrap: anywhere; }
 .card.is-done .card-title { color: var(--muted); text-decoration: line-through; }
 .card-desc { margin: 4px 0 0 24px; color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.card-foot { display: flex; align-items: center; gap: 8px; margin: 10px 0 0 24px; }
-.card-foot .updated { margin-left: auto; font-size: 11.5px; color: var(--muted); }
+.card-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; margin: 10px 0 0 24px; }
+.card-foot .updated { margin-left: auto; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
 
 .quick-add { display: flex; align-items: center; gap: 6px; width: 100%; height: 34px; padding: 0 10px; border: 0; border-radius: var(--radius); background: transparent; color: var(--muted); cursor: pointer; font-weight: 500; }
 .quick-add:hover { background: var(--surface-3); color: var(--text); }
@@ -317,6 +319,9 @@ textarea.input { height: auto; padding: 8px 10px; resize: vertical; line-height:
    ========================================================================== */
 .tag { display: inline-flex; align-items: center; gap: 4px; max-width: 160px; height: 22px; padding: 0 8px; border-radius: 6px; background: var(--surface-3); color: var(--text-2); font-size: 11.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tag .i { width: 12px; height: 12px; }
+.tag.label { background: var(--accent-soft); color: var(--accent); }
+.attach { display: inline-flex; align-items: center; gap: 3px; font-size: 12px; color: var(--muted); }
+.attach .i { width: 13px; height: 13px; }
 .status-pill { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); font-size: 12px; font-weight: 500; white-space: nowrap; }
 .prio { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 500; white-space: nowrap; }
 .prio .i { width: 13px; height: 13px; }
@@ -356,6 +361,37 @@ td.num, .muted-cell { color: var(--muted); font-size: 12.5px; font-variant-numer
 /* ==========================================================================
    Empty / skeleton
    ========================================================================== */
+.link-list { list-style: none; margin: -12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.link-list:empty { display: none; }
+.link-list a { display: flex; align-items: center; gap: 6px; color: var(--accent); font-size: 12.5px; overflow-wrap: anywhere; }
+.history h3 { font-size: 12.5px; color: var(--muted); font-weight: 600; margin-bottom: 8px; }
+.history ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; }
+.history li { color: var(--text-2); overflow-wrap: anywhere; }
+.history time { display: block; font-size: 11.5px; color: var(--muted); }
+.sb-saved { display: flex; align-items: center; }
+.sb-saved .sb-link { flex: 1; min-width: 0; }
+.sb-saved .remove { display: grid; place-items: center; width: 26px; height: 26px; flex: none; border: 0; border-radius: 6px; background: none; color: var(--muted); cursor: pointer; }
+.sb-saved .remove:hover { background: var(--surface-3); color: var(--text); }
+.sb-saved .remove .i { width: 13px; height: 13px; }
+
+/* Calendar */
+.cal-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.cal-head h2 { font-size: 15px; font-weight: 600; min-width: 150px; }
+.cal-head .note { margin-left: auto; color: var(--muted); font-size: 12.5px; }
+.cal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }
+.cal-dow { padding: 8px; background: var(--surface-2); font-size: 11.5px; font-weight: 600; color: var(--muted); text-align: center; }
+.cal-day { min-height: 112px; padding: 6px; background: var(--surface); display: flex; flex-direction: column; gap: 3px; cursor: pointer; min-width: 0; }
+.cal-day:hover { background: var(--surface-2); }
+.cal-day.other { background: var(--surface-2); }
+.cal-day.other .cal-num { color: var(--muted); }
+.cal-num { font-size: 12px; font-weight: 600; width: 22px; height: 22px; display: grid; place-items: center; border-radius: 50%; }
+.cal-day.today .cal-num { background: var(--accent); color: var(--accent-text); }
+.cal-task { display: flex; align-items: center; gap: 5px; padding: 2px 5px; border: 0; border-radius: 4px; background: var(--surface-3); color: var(--text); font-size: 11.5px; text-align: left; cursor: pointer; min-width: 0; }
+.cal-task span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cal-task.is-done span:last-child { text-decoration: line-through; color: var(--muted); }
+.cal-task.overdue { color: var(--critical); font-weight: 600; }
+.cal-more { border: 0; background: none; padding: 0 5px; color: var(--muted); font-size: 11.5px; text-align: left; cursor: pointer; }
+
 .empty-state { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; padding: 64px 24px; background: var(--surface); border: 1px dashed var(--border-strong); border-radius: var(--radius-lg); }
 .empty-state .empty-icon { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 12px; background: var(--accent-soft); color: var(--accent); margin-bottom: 4px; }
 .empty-state .empty-icon .i { width: 22px; height: 22px; }
@@ -520,11 +556,12 @@ dialog::backdrop { background: rgba(8, 10, 14, 0.45); backdrop-filter: blur(1px)
   .kpi { grid-column: span 6; }
   .panel, .panel.wide, .panel.narrow { grid-column: span 12; }
 }
-@media (max-width: 1000px) {
+@media (max-width: 760px) {
   .board { grid-template-columns: 1fr; }
   .column { min-height: 0; }
 }
-@media (max-width: 860px) {
+/* Tablets get the full width for the board, with the sidebar on demand. */
+@media (max-width: 1024px) {
   .app { grid-template-columns: 1fr; }
   .sidebar {
     position: fixed; z-index: 50; left: 0; top: 0; width: min(var(--sidebar-w), 85vw);
@@ -542,9 +579,13 @@ dialog::backdrop { background: rgba(8, 10, 14, 0.45); backdrop-filter: blur(1px)
   #newTaskBtn span, #newTaskBtn kbd { display: none; }
   #newTaskBtn { width: 34px; padding: 0; }
   .search-field, .search-field input { width: 100%; }
-  .toolbar .select { flex: 1; }
+  .toolbar .select { flex: 1 1 40%; }
   .result-count { display: none; }
   .kpi { grid-column: span 12; }
+  .cal-day { min-height: 76px; padding: 3px; }
+  .cal-task { padding: 1px 3px; font-size: 10.5px; }
+  .cal-task .dot { display: none; }
+  .cal-head .note { display: none; }
   .prop, .meta { grid-template-columns: 1fr; gap: 4px; }
   .drawer-body, .drawer-foot { padding-left: 16px; padding-right: 16px; }
   .hint { display: none; }

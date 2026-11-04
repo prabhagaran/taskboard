@@ -52,9 +52,10 @@ function storageSet(key, value) {
 const state = {
   tasks: [],
   config: storageGet(CONFIG_KEY, { url: '', token: '' }),
-  prefs: { view: 'board', hideDone: false, theme: 'system', sort: { key: 'priority', dir: 'asc' }, ...storageGet(PREFS_KEY, {}) },
+  prefs: { view: 'board', hideDone: false, theme: 'system', sort: { key: 'priority', dir: 'asc' }, savedFilters: [], ...storageGet(PREFS_KEY, {}) },
   route: parseRoute(),
-  filters: { search: '', priority: '' },
+  filters: { search: '', priority: '', tag: '' },
+  calendar: { month: null, expanded: '' },
   selection: new Set(),
   quickAdd: null, // { status, text } while the inline board composer is open
   pending: 0,
@@ -119,6 +120,9 @@ const api = {
     if (isRemote()) return remoteCall('delete', { id });
     localStore.write(localStore.read().filter((t) => t.id !== id));
   },
+  async history(id) {
+    return (await remoteCall('history', { id })).entries;
+  },
 };
 
 async function withSync(fn) {
@@ -149,6 +153,9 @@ function normalize(task) {
     status: STATUS_LABEL[task.status] ? task.status : 'todo',
     priority: PRIORITIES[task.priority] ? task.priority : 'medium',
     project: task.project || '',
+    tags: task.tags || '',
+    links: task.links || '',
+    sortOrder: task.sortOrder === undefined || task.sortOrder === null ? '' : String(task.sortOrder),
     dueDate: /^\d{4}-\d{2}-\d{2}$/.test(task.dueDate || '') ? task.dueDate : '',
     createdAt: task.createdAt || '',
     updatedAt: task.updatedAt || '',
@@ -343,6 +350,14 @@ const priorityHtml = (p) => `<span class="prio ${p}">${icon('flag')}${PRIORITIES
 const statusHtml = (s) => `<span class="status-pill"><span class="dot ${s}"></span>${STATUS_LABEL[s]}</span>`;
 const projectHtml = (p) => (p ? `<span class="tag" title="${esc(p)}">${icon('folder')}${esc(p)}</span>` : '');
 
+const tagList = (t) => t.tags.split(',').map((x) => x.trim()).filter(Boolean);
+const linkList = (t) => t.links.split('\n').map((x) => x.trim()).filter((x) => /^https?:\/\//i.test(x));
+const tagsHtml = (t) => tagList(t).map((x) => `<span class="tag label">${esc(x)}</span>`).join('');
+
+function allTags() {
+  return [...new Set(state.tasks.flatMap(tagList))].sort((a, b) => a.localeCompare(b));
+}
+
 function projects() {
   return [...new Set(state.tasks.map((t) => t.project).filter(Boolean))].sort((a, b) => a.localeCompare(b));
 }
@@ -383,7 +398,8 @@ function visibleTasks() {
   return scopeTasks()
     .filter((t) => !hideDone || t.status !== 'done')
     .filter((t) => !state.filters.priority || t.priority === state.filters.priority)
-    .filter((t) => !q || `${t.title} ${t.description} ${t.project}`.toLowerCase().includes(q));
+    .filter((t) => !state.filters.tag || tagList(t).includes(state.filters.tag))
+    .filter((t) => !q || `${t.title} ${t.description} ${t.project} ${t.tags}`.toLowerCase().includes(q));
 }
 
 function routeDefaults() {
@@ -408,6 +424,14 @@ function defaultCompare(a, b) {
   return SORTERS.priority(a, b) || SORTERS.dueDate(a, b) || a.createdAt.localeCompare(b.createdAt);
 }
 
+// Board order: hand-placed cards first, in the order they were dropped.
+function boardCompare(a, b) {
+  if (a.sortOrder && b.sortOrder) return Number(a.sortOrder) - Number(b.sortOrder);
+  if (a.sortOrder) return -1;
+  if (b.sortOrder) return 1;
+  return defaultCompare(a, b);
+}
+
 function sortTasks(tasks) {
   const { key, dir } = state.prefs.sort;
   const sorter = SORTERS[key] || SORTERS.priority;
@@ -425,6 +449,7 @@ function render() {
   renderBanners();
   renderSync();
   renderDatalist();
+  renderFilters();
 
   const isDash = state.route.scope === 'dashboard';
   $('#toolbar').hidden = isDash;
@@ -450,6 +475,7 @@ function render() {
 
   if (isRemote() && !state.loaded) main.innerHTML = skeletonHtml();
   else if (state.prefs.view === 'table') main.innerHTML = tableHtml(tasks);
+  else if (state.prefs.view === 'calendar') main.innerHTML = calendarHtml(tasks);
   else main.innerHTML = boardHtml(tasks);
 
   renderBulkbar();
@@ -529,6 +555,25 @@ function renderDatalist() {
     .join('');
 }
 
+function hasActiveFilter() {
+  return Boolean(state.filters.search || state.filters.priority || state.filters.tag);
+}
+
+function renderFilters() {
+  const tags = allTags();
+  if (state.filters.tag && !tags.includes(state.filters.tag)) state.filters.tag = '';
+  $('#tagFilter').hidden = !tags.length;
+  $('#tagFilter').innerHTML = `<option value="">Any tag</option>` +
+    tags.map((t) => `<option value="${esc(t)}" ${t === state.filters.tag ? 'selected' : ''}>${esc(t)}</option>`).join('');
+  $('#saveFilterBtn').hidden = !hasActiveFilter();
+  $('#savedHead').hidden = !state.prefs.savedFilters.length;
+  $('#navSaved').innerHTML = state.prefs.savedFilters
+    .map((f) => `<div class="sb-saved">
+      <button class="sb-link" type="button" data-saved="${esc(f.id)}">${icon('bookmark')}<span class="label">${esc(f.name)}</span></button>
+      <button class="remove" type="button" data-saved-remove="${esc(f.id)}" aria-label="Remove ${esc(f.name)}">${icon('x')}</button></div>`)
+    .join('');
+}
+
 function renderBulkbar() {
   const n = state.selection.size;
   $('#bulkbar').hidden = !n || state.prefs.view !== 'table';
@@ -559,7 +604,7 @@ function emptyStateHtml() {
 /* ---------- Board ---------- */
 function boardHtml(tasks) {
   return `<div class="board">${STATUSES.map((s) => {
-    const items = sortTasks(tasks.filter((t) => t.status === s.id));
+    const items = tasks.filter((t) => t.status === s.id).sort(boardCompare);
     const composing = state.quickAdd && state.quickAdd.status === s.id;
     const composer = composing
       ? `<input class="input quick-input" data-quick="${s.id}" placeholder="Task title, then Enter" maxlength="500" aria-label="New task title">`
@@ -582,7 +627,8 @@ function boardHtml(tasks) {
 
 function cardHtml(t) {
   const done = t.status === 'done';
-  const top = [projectHtml(t.project)].filter(Boolean).join('');
+  const top = projectHtml(t.project) + tagsHtml(t);
+  const links = linkList(t).length;
   return `
     <article class="card ${done ? 'is-done' : ''}" draggable="true" tabindex="0" data-id="${esc(t.id)}">
       ${top ? `<div class="card-top">${top}</div>` : ''}
@@ -594,6 +640,7 @@ function cardHtml(t) {
       <div class="card-foot">
         ${priorityHtml(t.priority)}
         ${dueHtml(t)}
+        ${links ? `<span class="attach" title="${plural(links, 'link')}">${icon('link')}${links}</span>` : ''}
         <span class="updated" title="Updated ${esc(fullTime(t.updatedAt))}">${esc(relTime(t.updatedAt))}</span>
       </div>
     </article>`;
@@ -634,7 +681,7 @@ function tableHtml(tasks) {
       return `
         <tr class="${sel ? 'selected' : ''} ${t.status === 'done' ? 'is-done' : ''}" data-id="${esc(t.id)}" tabindex="0">
           <td class="sel"><input type="checkbox" class="checkbox row-select" ${sel ? 'checked' : ''} aria-label="Select “${esc(t.title)}”"></td>
-          <td class="title-cell"><strong>${esc(t.title)}</strong>${t.description ? `<small>${esc(t.description)}</small>` : ''}</td>
+          <td class="title-cell"><strong>${esc(t.title)}</strong>${t.tags ? `<small>${esc(tagList(t).join(' · '))}</small>` : t.description ? `<small>${esc(t.description)}</small>` : ''}</td>
           <td>${statusHtml(t.status)}</td>
           <td>${priorityHtml(t.priority)}</td>
           <td>${projectHtml(t.project) || '<span class="muted-cell">—</span>'}</td>
@@ -653,6 +700,39 @@ function tableHtml(tasks) {
         <tbody>${body}</tbody>
       </table>
     </div>`;
+}
+
+/* ---------- Calendar ---------- */
+function calendarHtml(tasks) {
+  const now = new Date();
+  const month = state.calendar.month || new Date(now.getFullYear(), now.getMonth(), 1);
+  const start = new Date(month.getFullYear(), month.getMonth(), 1 - month.getDay());
+  const today = todayStr();
+  const byDay = new Map();
+  [...tasks].filter((t) => t.dueDate).sort(defaultCompare).forEach((t) => {
+    if (!byDay.has(t.dueDate)) byDay.set(t.dueDate, []);
+    byDay.get(t.dueDate).push(t);
+  });
+  const undated = tasks.filter((t) => !t.dueDate && isOpen(t)).length;
+  const cells = Array.from({ length: 42 }, (_, i) => {
+    const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+    const key = localDate(d);
+    const items = byDay.get(key) || [];
+    const limit = state.calendar.expanded === key ? items.length : 3;
+    const chips = items.slice(0, limit).map((t) => `<button class="cal-task ${t.status === 'done' ? 'is-done' : ''} ${isOverdue(t) ? 'overdue' : ''}" data-id="${esc(t.id)}" title="${esc(t.title)}"><span class="dot ${t.status}"></span><span>${esc(t.title)}</span></button>`).join('');
+    const more = items.length > limit ? `<button class="cal-more" data-cal-more="${key}">+${items.length - limit} more</button>` : '';
+    return `<div class="cal-day ${d.getMonth() === month.getMonth() ? '' : 'other'} ${key === today ? 'today' : ''}" data-new-date="${key}"><span class="cal-num">${d.getDate()}</span>${chips}${more}</div>`;
+  }).join('');
+  const days = Array.from({ length: 7 }, (_, i) => new Date(2023, 0, 1 + i).toLocaleDateString(undefined, { weekday: 'short' }));
+  return `
+    <div class="cal-head">
+      <button class="icon-btn" data-cal-nav="-1" aria-label="Previous month">${icon('left')}</button>
+      <button class="icon-btn" data-cal-nav="1" aria-label="Next month">${icon('right')}</button>
+      <button class="btn small" data-cal-nav="0">Today</button>
+      <h2>${esc(month.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }))}</h2>
+      ${undated ? `<span class="note">${plural(undated, 'open task')} without a due date</span>` : ''}
+    </div>
+    <div class="cal">${days.map((d) => `<div class="cal-dow">${esc(d)}</div>`).join('')}${cells}</div>`;
 }
 
 /* ---------- Dashboard ---------- */
@@ -835,7 +915,7 @@ function openTaskDrawer(task = null, defaults = {}) {
   editingId = task ? task.id : null;
   const data = task || { title: '', description: '', status: 'todo', priority: 'medium', project: '', dueDate: '', ...routeDefaults(), ...defaults };
   $('#drawerLabel').textContent = task ? 'Task details' : 'New task';
-  for (const name of ['title', 'description', 'status', 'priority', 'project', 'dueDate']) {
+  for (const name of ['title', 'description', 'status', 'priority', 'project', 'dueDate', 'tags', 'links']) {
     taskForm.elements[name].value = data[name] || '';
   }
   $('#deleteTaskBtn').hidden = !task;
@@ -845,8 +925,29 @@ function openTaskDrawer(task = null, defaults = {}) {
        <dt>Last updated</dt><dd>${esc(fullTime(task.updatedAt) || '—')}</dd>
        <dt>Task ID</dt><dd><code>${esc(task.id)}</code></dd>`
     : '';
+  $('#taskLinks').innerHTML = task
+    ? linkList(task).map((url) => `<li><a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${icon('link')}${esc(url)}</a></li>`).join('')
+    : '';
+  loadHistory(task);
   if (!drawer.open) drawer.showModal();
   taskForm.elements.title.focus();
+}
+
+async function loadHistory(task) {
+  const section = $('#taskHistory');
+  const list = $('#historyList');
+  section.hidden = !task || !isRemote();
+  if (section.hidden) return;
+  list.innerHTML = '<li class="muted">Loading…</li>';
+  try {
+    const entries = await api.history(task.id);
+    if (editingId !== task.id) return; // Another task was opened meanwhile.
+    list.innerHTML = entries.length
+      ? entries.map((e) => `<li>${esc(e.action)}${e.details ? `: ${esc(e.details)}` : ''}<time>${esc(fullTime(e.at))}</time></li>`).join('')
+      : '<li class="muted">No changes recorded yet.</li>';
+  } catch (err) {
+    if (editingId === task.id) list.innerHTML = `<li class="muted">${esc(err.message)}</li>`;
+  }
 }
 
 taskForm.addEventListener('submit', (e) => {
@@ -861,6 +962,8 @@ taskForm.addEventListener('submit', (e) => {
     priority: f.priority.value,
     project: f.project.value.trim(),
     dueDate: f.dueDate.value,
+    tags: f.tags.value.split(',').map((x) => x.trim()).filter(Boolean).join(', '),
+    links: f.links.value.split('\n').map((x) => x.trim()).filter((x) => /^https?:\/\//i.test(x)).join('\n'),
   };
   const existing = state.tasks.find((t) => t.id === editingId);
   if (existing) saveTask({ ...existing, ...fields }, false);
@@ -974,6 +1077,7 @@ function paletteCommands() {
     { group: 'Actions', icon: 'plus', label: 'Create new task', hint: 'N', run: () => openTaskDrawer() },
     { group: 'Actions', icon: 'board', label: 'Switch to board view', run: () => setView('board') },
     { group: 'Actions', icon: 'table', label: 'Switch to table view', run: () => setView('table') },
+    { group: 'Actions', icon: 'calendar', label: 'Switch to calendar view', run: () => setView('calendar') },
     { group: 'Actions', icon: 'sun', label: 'Light theme', run: () => setTheme('light') },
     { group: 'Actions', icon: 'moon', label: 'Dark theme', run: () => setTheme('dark') },
     { group: 'Actions', icon: 'monitor', label: 'System theme', run: () => setTheme('system') },
@@ -1109,6 +1213,21 @@ main.addEventListener('click', (e) => {
     return;
   }
 
+  const calNav = t.closest('[data-cal-nav]');
+  if (calNav) {
+    const step = Number(calNav.dataset.calNav);
+    const now = new Date();
+    const cur = state.calendar.month || new Date(now.getFullYear(), now.getMonth(), 1);
+    state.calendar.month = step ? new Date(cur.getFullYear(), cur.getMonth() + step, 1) : null;
+    state.calendar.expanded = '';
+    return render();
+  }
+  const calMore = t.closest('[data-cal-more]');
+  if (calMore) {
+    state.calendar.expanded = calMore.dataset.calMore;
+    return render();
+  }
+
   const quickOpen = t.closest('[data-quick-open]');
   if (quickOpen) {
     state.quickAdd = { status: quickOpen.dataset.quickOpen, text: '' };
@@ -1132,7 +1251,12 @@ main.addEventListener('click', (e) => {
   }
 
   const item = t.closest('[data-id]');
-  if (!item || t.closest('.quick-input')) return;
+  if (!item) {
+    const day = t.closest('[data-new-date]');
+    if (day) openTaskDrawer(null, { dueDate: day.dataset.newDate });
+    return;
+  }
+  if (t.closest('.quick-input')) return;
   const task = state.tasks.find((x) => x.id === item.dataset.id);
   if (!task) return;
 
@@ -1196,20 +1320,71 @@ main.addEventListener('dragover', (e) => {
   const zone = e.target.closest('.column-body');
   if (!zone) return;
   e.preventDefault();
-  $$('.column-body.drop-target').forEach((z) => z !== zone && z.classList.remove('drop-target'));
+  $$('.column-body.drop-target').forEach((z) => z !== zone && clearDropMarks(z));
+  clearDropMarks(zone);
   zone.classList.add('drop-target');
+  const before = cardAfterPointer(zone, e.clientY);
+  if (before) before.classList.add('drop-before');
+  else zone.classList.add('drop-end');
 });
 main.addEventListener('dragleave', (e) => {
   const zone = e.target.closest('.column-body');
-  if (zone && !zone.contains(e.relatedTarget)) zone.classList.remove('drop-target');
+  if (zone && !zone.contains(e.relatedTarget)) clearDropMarks(zone);
 });
 main.addEventListener('drop', (e) => {
   const zone = e.target.closest('.column-body');
   if (!zone) return;
   e.preventDefault();
-  zone.classList.remove('drop-target');
-  setStatus(e.dataTransfer.getData('text/plain'), zone.dataset.status);
+  const before = cardAfterPointer(zone, e.clientY);
+  clearDropMarks(zone);
+  moveCard(e.dataTransfer.getData('text/plain'), zone.dataset.status, before ? before.dataset.id : null);
 });
+
+function clearDropMarks(zone) {
+  zone.classList.remove('drop-target', 'drop-end');
+  $$('.drop-before', zone).forEach((c) => c.classList.remove('drop-before'));
+}
+
+// The card the dragged one would land above, or null for the end of the column.
+function cardAfterPointer(zone, y) {
+  return $$('.card:not(.dragging)', zone).find((c) => {
+    const r = c.getBoundingClientRect();
+    return y < r.top + r.height / 2;
+  }) || null;
+}
+
+// Places a task between its new neighbours. Usually one write: only the moved
+// card changes. Cards without an order yet are numbered once, the first time.
+function moveCard(id, status, beforeId) {
+  const task = state.tasks.find((t) => t.id === id);
+  if (!task) return;
+  const column = visibleTasks().filter((t) => t.status === status && t.id !== id).sort(boardCompare);
+  const index = beforeId ? column.findIndex((t) => t.id === beforeId) : column.length;
+  const prev = column[index - 1];
+  const next = column[index];
+  const order = (t) => (t && t.sortOrder ? Number(t.sortOrder) : null);
+  const p = order(prev);
+  const n = order(next);
+  let sortOrder = null;
+  if (!prev && !next) sortOrder = task.sortOrder;
+  else if (p !== null && n !== null) sortOrder = String((p + n) / 2);
+  else if (!prev && n !== null) sortOrder = String(n - 1024);
+  else if (!next && p !== null) sortOrder = String(p + 1024);
+  if (sortOrder !== null) {
+    if (task.status !== status || task.sortOrder !== sortOrder) saveTask({ ...task, status, sortOrder }, false);
+    return;
+  }
+  const ordered = [...column.slice(0, index), { ...task, status }, ...column.slice(index)];
+  const jobs = ordered.map((t, i) => ({
+    prev: state.tasks.find((x) => x.id === t.id),
+    next: { ...t, sortOrder: String((i + 1) * 1024) },
+  }));
+  jobs.forEach((j) => putLocal(j.next));
+  render();
+  (async () => {
+    for (const j of jobs) await persist(j.next, false, j.prev);
+  })();
+}
 
 /* ---------- Chart tooltips ---------- */
 const tooltip = $('#tooltip');
@@ -1240,10 +1415,14 @@ main.addEventListener('focusout', () => tooltip.classList.remove('show'));
    Toolbar, header, sidebar
    ========================================================================== */
 function clearFilters() {
-  state.filters = { search: '', priority: '' };
-  $('#search').value = '';
-  $('#priorityFilter').value = '';
+  setFilters({ search: '', priority: '', tag: '' });
   render();
+}
+
+function setFilters(filters) {
+  state.filters = { ...filters };
+  $('#search').value = filters.search;
+  $('#priorityFilter').value = filters.priority;
 }
 
 $('#search').addEventListener('input', (e) => {
@@ -1254,6 +1433,42 @@ $('#priorityFilter').addEventListener('change', (e) => {
   state.filters.priority = e.target.value;
   render();
 });
+$('#tagFilter').addEventListener('change', (e) => {
+  state.filters.tag = e.target.value;
+  render();
+});
+
+const saveFilterDialog = $('#saveFilterDialog');
+const saveFilterForm = $('#saveFilterForm');
+$('#saveFilterBtn').addEventListener('click', () => {
+  saveFilterForm.reset();
+  saveFilterDialog.showModal();
+});
+saveFilterForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const name = saveFilterForm.elements.name.value.trim();
+  if (!name) return;
+  state.prefs.savedFilters = [...state.prefs.savedFilters, { id: newId(), name, hash: routeHash(state.route), ...state.filters }];
+  savePrefs();
+  saveFilterDialog.close();
+  render();
+});
+$('#navSaved').addEventListener('click', (e) => {
+  const remove = e.target.closest('[data-saved-remove]');
+  if (remove) {
+    state.prefs.savedFilters = state.prefs.savedFilters.filter((f) => f.id !== remove.dataset.savedRemove);
+    savePrefs();
+    return render();
+  }
+  const open = e.target.closest('[data-saved]');
+  const saved = open && state.prefs.savedFilters.find((f) => f.id === open.dataset.saved);
+  if (!saved) return;
+  setFilters({ search: saved.search, priority: saved.priority, tag: saved.tag });
+  $('#app').classList.remove('nav-open');
+  if (location.hash === saved.hash) render();
+  else location.hash = saved.hash;
+});
+
 $('#hideDone').addEventListener('change', (e) => {
   state.prefs.hideDone = e.target.checked;
   savePrefs();

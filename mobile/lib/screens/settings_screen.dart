@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 
 import '../services/api.dart';
@@ -98,7 +100,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
       appBar: AppBar(title: Text(store.isConnected ? 'Settings' : 'Connect Google Sheet')),
       body: SafeArea(
         child: ListView(
-          padding: const EdgeInsets.all(16),
+          padding: EdgeInsets.symmetric(
+            horizontal: max(16, (MediaQuery.sizeOf(context).width - 640) / 2),
+            vertical: 16,
+          ),
           children: [
             if (store.isConnected) ...[
               ListTile(

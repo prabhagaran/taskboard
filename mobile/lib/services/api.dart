@@ -43,6 +43,13 @@ class TaskApi {
 
   Future<void> delete(String id) => _call('delete', {'id': id});
 
+  Future<List<HistoryEntry>> history(String id) async {
+    final data = await _call('history', {'id': id});
+    return (data['entries'] as List)
+        .map((e) => HistoryEntry.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
   Future<Map<String, dynamic>> _call(
     String action, [
     Map<String, dynamic> payload = const {},

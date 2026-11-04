@@ -1,6 +1,10 @@
+import 'dart:math';
+
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../models/task.dart';
+import '../services/api.dart';
 import '../services/store.dart';
 import '../widgets/common.dart';
 
@@ -19,6 +23,8 @@ class _TaskEditorState extends State<TaskEditor> {
   late final TextEditingController _title;
   late final TextEditingController _description;
   late final TextEditingController _project;
+  late final TextEditingController _tags;
+  late final TextEditingController _links;
   late TaskStatus _status;
   late TaskPriority _priority;
   late String _dueDate;
@@ -33,6 +39,8 @@ class _TaskEditorState extends State<TaskEditor> {
     _title = TextEditingController(text: task?.title);
     _description = TextEditingController(text: task?.description);
     _project = TextEditingController(text: task?.project);
+    _tags = TextEditingController(text: task?.tags);
+    _links = TextEditingController(text: task?.links);
     _status = task?.status ?? TaskStatus.todo;
     _priority = task?.priority ?? TaskPriority.medium;
     _dueDate = task?.dueDate ?? widget.initialDueDate;
@@ -43,6 +51,8 @@ class _TaskEditorState extends State<TaskEditor> {
     _title.dispose();
     _description.dispose();
     _project.dispose();
+    _tags.dispose();
+    _links.dispose();
     super.dispose();
   }
 
@@ -73,6 +83,8 @@ class _TaskEditorState extends State<TaskEditor> {
       priority: _priority,
       project: _project.text.trim(),
       dueDate: _dueDate,
+      tags: cleanTags(_tags.text),
+      links: cleanLinks(_links.text),
     );
     if (_isNew) {
       store.add(task);
@@ -87,9 +99,15 @@ class _TaskEditorState extends State<TaskEditor> {
     Navigator.of(context).pop();
   }
 
+  Future<void> _openLink(String link) async {
+    final opened = await launchUrl(Uri.parse(link), mode: LaunchMode.externalApplication);
+    if (!opened) showMessage('Could not open that link.');
+  }
+
   @override
   Widget build(BuildContext context) {
-    final projects = StoreScope.of(context).projects;
+    final store = StoreScope.of(context);
+    final projects = store.projects;
     final label = Theme.of(context).textTheme.labelLarge;
     return Scaffold(
       appBar: AppBar(
@@ -107,7 +125,10 @@ class _TaskEditorState extends State<TaskEditor> {
       ),
       body: SafeArea(
         child: ListView(
-          padding: const EdgeInsets.all(16),
+          padding: EdgeInsets.symmetric(
+            horizontal: max(16, (MediaQuery.sizeOf(context).width - 640) / 2),
+            vertical: 16,
+          ),
           children: [
             TextField(
               controller: _title,
@@ -206,9 +227,104 @@ class _TaskEditorState extends State<TaskEditor> {
                 border: OutlineInputBorder(),
               ),
             ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _tags,
+              decoration: const InputDecoration(
+                labelText: 'Tags',
+                hintText: 'home, urgent',
+                prefixIcon: Icon(Icons.sell_outlined),
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _links,
+              minLines: 2,
+              maxLines: 6,
+              keyboardType: TextInputType.url,
+              decoration: const InputDecoration(
+                labelText: 'Links',
+                hintText: 'One https:// link per line',
+                alignLabelWithHint: true,
+                border: OutlineInputBorder(),
+              ),
+            ),
+            for (final link in widget.task?.linkList ?? const <String>[])
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                leading: const Icon(Icons.open_in_new, size: 20),
+                title: Text(link, maxLines: 1, overflow: TextOverflow.ellipsis),
+                onTap: () => _openLink(link),
+              ),
+            if (!_isNew)
+              ExpansionTile(
+                tilePadding: EdgeInsets.zero,
+                childrenPadding: const EdgeInsets.only(bottom: 12),
+                expandedAlignment: Alignment.centerLeft,
+                title: const Text('History'),
+                children: [_HistoryList(load: () => store.history(widget.task!.id))],
+              ),
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Loads a task's change log when its panel is first opened.
+class _HistoryList extends StatefulWidget {
+  const _HistoryList({required this.load});
+
+  final Future<List<HistoryEntry>> Function() load;
+
+  @override
+  State<_HistoryList> createState() => _HistoryListState();
+}
+
+class _HistoryListState extends State<_HistoryList> {
+  late final Future<List<HistoryEntry>> _entries = widget.load();
+
+  String _timestamp(String at) {
+    final time = DateTime.tryParse(at)?.toLocal();
+    if (time == null) return at;
+    final clock = '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
+    return '${shortDate(dateKey(time))}, $clock';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final muted = Theme.of(context).textTheme.bodySmall?.copyWith(
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        );
+    return FutureBuilder<List<HistoryEntry>>(
+      future: _entries,
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          final error = snapshot.error;
+          return Text(error is ApiException ? error.message : 'Could not load history.', style: muted);
+        }
+        final entries = snapshot.data;
+        if (entries == null) return const LinearProgressIndicator();
+        if (entries.isEmpty) return Text('No changes recorded yet.', style: muted);
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (final entry in entries)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(entry.details.isEmpty ? entry.action : '${entry.action}: ${entry.details}'),
+                    Text(_timestamp(entry.at), style: muted),
+                  ],
+                ),
+              ),
+          ],
+        );
+      },
     );
   }
 }

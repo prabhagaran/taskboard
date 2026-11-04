@@ -3,6 +3,7 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:home_widget/home_widget.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/task.dart';
@@ -12,6 +13,9 @@ const _urlKey = 'url';
 const _cacheKey = 'tasks';
 const _themeKey = 'theme';
 const _tokenKey = 'token';
+const _filtersKey = 'savedFilters';
+const _widgetProvider = 'TaskBoardWidget';
+const _widgetLines = 6;
 
 /// App state. Edits apply immediately and roll back if the sheet rejects them.
 class TaskStore extends ChangeNotifier {
@@ -26,6 +30,7 @@ class TaskStore extends ChangeNotifier {
   bool syncing = false;
   String? syncError;
   List<Task> tasks = [];
+  List<SavedFilter> savedFilters = [];
   ThemeMode themeMode = ThemeMode.system;
   String url = '';
 
@@ -36,8 +41,74 @@ class TaskStore extends ChangeNotifier {
     return names..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
   }
 
+  List<String> get allTags {
+    final names = tasks.expand((t) => t.tagList).toSet().toList();
+    return names..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+  }
+
+  Future<List<HistoryEntry>> history(String id) => _api!.history(id);
+
+  Future<void> saveFilter(SavedFilter filter) async {
+    savedFilters = [...savedFilters.where((f) => f.name != filter.name), filter];
+    notifyListeners();
+    await _saveFilters();
+  }
+
+  Future<void> removeFilter(SavedFilter filter) async {
+    savedFilters = savedFilters.where((f) => f.name != filter.name).toList();
+    notifyListeners();
+    await _saveFilters();
+  }
+
+  Future<void> _saveFilters() => _prefs.setString(
+        _filtersKey,
+        jsonEncode(savedFilters.map((f) => f.toJson()).toList()),
+      );
+
+  /// Moves a task within [column], which must be sorted by [compareManual].
+  /// Normally one write; cards with no position yet are numbered the first time.
+  Future<void> reorder(List<Task> column, int oldIndex, int index) async {
+    if (index == oldIndex) return;
+    final rest = [...column];
+    final moved = rest.removeAt(oldIndex);
+    final prev = index > 0 ? rest[index - 1].order : null;
+    final next = index < rest.length ? rest[index].order : null;
+
+    final double? position;
+    if (index > 0 && index < rest.length) {
+      position = prev != null && next != null ? (prev + next) / 2 : null;
+    } else if (index == 0) {
+      position = next == null ? null : next - 1024;
+    } else {
+      position = prev == null ? null : prev + 1024;
+    }
+    if (position != null) return edit(moved.copyWith(sortOrder: '$position'));
+
+    rest.insert(index, moved);
+    final numbered = [
+      for (var i = 0; i < rest.length; i++) rest[i].copyWith(sortOrder: '${(i + 1) * 1024}'),
+    ];
+    numbered.forEach(_replace);
+    notifyListeners();
+    for (final task in numbered) {
+      try {
+        await _api!.update(task);
+      } on ApiException catch (e) {
+        onError('Order not saved: ${e.message}');
+        return refresh();
+      }
+    }
+    _saveCache();
+  }
+
   Future<void> init() async {
     _prefs = await SharedPreferences.getInstance();
+    final filters = _prefs.getString(_filtersKey);
+    if (filters != null) {
+      savedFilters = (jsonDecode(filters) as List)
+          .map((f) => SavedFilter.fromJson(f as Map<String, dynamic>))
+          .toList();
+    }
     themeMode = ThemeMode.values.firstWhere(
       (m) => m.name == _prefs.getString(_themeKey),
       orElse: () => ThemeMode.system,
@@ -97,6 +168,7 @@ class TaskStore extends ChangeNotifier {
     await _prefs.remove(_urlKey);
     await _prefs.remove(_cacheKey);
     await _secure.delete(key: _tokenKey);
+    await _updateWidget();
     notifyListeners();
   }
 
@@ -163,8 +235,31 @@ class TaskStore extends ChangeNotifier {
 
   void _remove(String id) => tasks = tasks.where((t) => t.id != id).toList();
 
-  void _saveCache() =>
-      _prefs.setString(_cacheKey, jsonEncode(tasks.map((t) => t.toJson()).toList()));
+  void _saveCache() {
+    _prefs.setString(_cacheKey, jsonEncode(tasks.map((t) => t.toJson()).toList()));
+    _updateWidget();
+  }
+
+  /// Sends the open tasks due today or earlier to the home-screen widget.
+  Future<void> _updateWidget() async {
+    final today = todayKey();
+    final due = tasks
+        .where((t) => t.isOpen && t.dueDate.isNotEmpty && t.dueDate.compareTo(today) <= 0)
+        .toList()
+      ..sort(compareTasks);
+    final lines = due.take(_widgetLines).map((t) => '• ${t.title}').toList();
+    if (due.length > _widgetLines) lines.add('+${due.length - _widgetLines} more');
+    try {
+      await HomeWidget.saveWidgetData<String>('title', 'Today · ${due.length}');
+      await HomeWidget.saveWidgetData<String>(
+        'lines',
+        lines.isEmpty ? 'Nothing due today' : lines.join('\n'),
+      );
+      await HomeWidget.updateWidget(androidName: _widgetProvider);
+    } catch (_) {
+      // The widget is optional; a failure here must never affect saving.
+    }
+  }
 }
 
 /// Gives the widget tree access to the store and rebuilds on changes.

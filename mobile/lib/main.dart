@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'screens/calendar_screen.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/tasks_screen.dart';
@@ -15,6 +16,17 @@ void main() {
 }
 
 const _seed = Color(0xFF4F46E5);
+
+/// Tablets and phones in landscape get a side rail instead of a bottom bar.
+const _railWidth = 600.0;
+
+const _destinations = [
+  (Icons.today_outlined, Icons.today, 'Today'),
+  (Icons.checklist_outlined, Icons.checklist, 'Tasks'),
+  (Icons.calendar_month_outlined, Icons.calendar_month, 'Calendar'),
+  (Icons.insights_outlined, Icons.insights, 'Dashboard'),
+  (Icons.settings_outlined, Icons.settings, 'Settings'),
+];
 
 ThemeData _theme(Brightness brightness) => ThemeData(
       colorScheme: ColorScheme.fromSeed(seedColor: _seed, brightness: brightness),
@@ -74,40 +86,55 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
+    final pages = IndexedStack(
+      index: _index,
+      children: const [
+        TodayScreen(),
+        TasksScreen(),
+        CalendarScreen(),
+        DashboardScreen(),
+        SettingsScreen(),
+      ],
+    );
+    void select(int i) => setState(() => _index = i);
+
+    if (MediaQuery.sizeOf(context).width >= _railWidth) {
+      return Scaffold(
+        body: Row(
+          children: [
+            SafeArea(
+              child: NavigationRail(
+                selectedIndex: _index,
+                onDestinationSelected: select,
+                labelType: NavigationRailLabelType.all,
+                destinations: [
+                  for (final (icon, selected, label) in _destinations)
+                    NavigationRailDestination(
+                      icon: Icon(icon),
+                      selectedIcon: Icon(selected),
+                      label: Text(label),
+                    ),
+                ],
+              ),
+            ),
+            const VerticalDivider(width: 1),
+            Expanded(child: pages),
+          ],
+        ),
+      );
+    }
     return Scaffold(
-      body: IndexedStack(
-        index: _index,
-        children: const [
-          TodayScreen(),
-          TasksScreen(),
-          DashboardScreen(),
-          SettingsScreen(),
-        ],
-      ),
+      body: pages,
       bottomNavigationBar: NavigationBar(
         selectedIndex: _index,
-        onDestinationSelected: (i) => setState(() => _index = i),
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.today_outlined),
-            selectedIcon: Icon(Icons.today),
-            label: 'Today',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.checklist_outlined),
-            selectedIcon: Icon(Icons.checklist),
-            label: 'Tasks',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.insights_outlined),
-            selectedIcon: Icon(Icons.insights),
-            label: 'Dashboard',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.settings_outlined),
-            selectedIcon: Icon(Icons.settings),
-            label: 'Settings',
-          ),
+        onDestinationSelected: select,
+        destinations: [
+          for (final (icon, selected, label) in _destinations)
+            NavigationDestination(
+              icon: Icon(icon),
+              selectedIcon: Icon(selected),
+              label: label,
+            ),
         ],
       ),
     );
