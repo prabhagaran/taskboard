@@ -52,6 +52,18 @@ Your app will be live at `https://<your-username>.github.io/taskboard/` within a
 Open the site, click the **gear icon** (or *Connect Google Sheet*), paste the **Web app URL** and **API token**, click **Test**, then **Save**.
 Repeat this once on each browser or device you use.
 
+## Android app
+
+[`mobile/`](mobile/) is a Flutter app that uses the same Google Sheet and web app. It has Today, Tasks, and Dashboard screens, swipe to complete or delete, and shows your last synced tasks when offline (changes need a connection).
+
+```bash
+cd mobile
+flutter build apk --release
+# Output: build/app/outputs/flutter-apk/app-release.apk
+```
+
+Copy the APK to your phone, open it, and allow installs from that source. On first launch, enter the web app URL and API token. The token is kept in Android's encrypted storage.
+
 ## Sheet format
 
 | id | title | description | status | priority | project | dueDate | createdAt | updatedAt |
