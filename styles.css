@@ -234,6 +234,7 @@ textarea.input { height: auto; padding: 8px 10px; resize: vertical; line-height:
 .sync.error::before { background: var(--critical); }
 @keyframes pulse { 50% { opacity: 0.35; } }
 
+.scrim { display: none; }
 .content { display: flex; flex-direction: column; min-width: 0; }
 
 .header {
@@ -249,7 +250,7 @@ textarea.input { height: auto; padding: 8px 10px; resize: vertical; line-height:
 .header-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
 
 .banner { display: flex; align-items: center; gap: 10px; margin: 16px 28px 0; padding: 10px 14px; border-radius: var(--radius); border: 1px solid; font-size: 13px; }
-.banner > span { flex: 1; }
+.banner > span { flex: 1 1 240px; }
 .banner.info { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 25%, transparent); color: var(--text); }
 .banner.info > .i { color: var(--accent); }
 .banner.error { background: var(--danger-soft); border-color: color-mix(in srgb, var(--danger) 30%, transparent); color: var(--text); }
@@ -530,7 +531,7 @@ dialog::backdrop { background: rgba(8, 10, 14, 0.45); backdrop-filter: blur(1px)
     transform: translateX(-100%); transition: transform 0.2s ease; box-shadow: var(--shadow-lg);
   }
   .app.nav-open .sidebar { transform: none; }
-  .scrim { position: fixed; inset: 0; z-index: 40; background: rgba(8, 10, 14, 0.45); opacity: 0; pointer-events: none; transition: opacity 0.2s; }
+  .scrim { display: block; position: fixed; inset: 0; z-index: 40; background: rgba(8, 10, 14, 0.45); opacity: 0; pointer-events: none; transition: opacity 0.2s; }
   .app.nav-open .scrim { opacity: 1; pointer-events: auto; }
   .menu-btn { display: inline-flex; }
 }
