@@ -16,7 +16,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
-  <link rel="stylesheet" href="styles.css?v=9">
+  <link rel="stylesheet" href="styles.css?v=10">
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -55,6 +55,7 @@
       <symbol id="i-right" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
       <symbol id="i-repeat" viewBox="0 0 24 24"><path d="M17 2l4 4-4 4M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4M21 13v2a3 3 0 0 1-3 3H3"/></symbol>
       <symbol id="i-checklist" viewBox="0 0 24 24"><path d="M3 6l2 2 3-3M3 16l2 2 3-3M12 7h9M12 17h9"/></symbol>
+      <symbol id="i-note" viewBox="0 0 24 24"><path d="M6 3h8.5L19 7.5V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v5h5M8.5 12.5h7M8.5 16.5h5"/></symbol>
       <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
     </defs>
   </svg>
@@ -252,6 +253,14 @@
           <textarea name="links" class="input" rows="3" placeholder="One https:// link per line, such as a Google Drive file"></textarea>
         </label>
         <ul class="link-list" id="taskLinks"></ul>
+        <section class="field" id="taskNotesSection" hidden>
+          <span>Notes</span>
+          <ul class="note-links" id="taskNotes"></ul>
+          <div class="check-add">
+            <select id="taskNoteLink" class="select" aria-label="Link an existing note"></select>
+            <button type="button" id="taskNoteNew" class="btn"><svg class="i"><use href="#i-plus"/></svg>New note</button>
+          </div>
+        </section>
         <dl class="meta" id="taskMeta"></dl>
         <section class="history" id="taskHistory" hidden>
           <h3>History</h3>
@@ -263,6 +272,33 @@
         <span class="spacer"></span>
         <button type="button" class="btn" data-close>Cancel</button>
         <button type="submit" class="btn primary">Save task</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="noteDrawer" class="drawer" aria-labelledby="noteDrawerLabel">
+    <form id="noteForm" method="dialog">
+      <div class="drawer-head">
+        <span id="noteDrawerLabel" class="drawer-label">New note</span>
+        <span class="spacer"></span>
+        <button type="button" class="icon-btn ghost" id="deleteNoteBtn" title="Delete" aria-label="Delete note"><svg class="i"><use href="#i-trash"/></svg></button>
+        <button type="button" class="icon-btn ghost" data-close title="Close" aria-label="Close"><svg class="i"><use href="#i-x"/></svg></button>
+      </div>
+      <div class="drawer-body">
+        <input name="title" class="title-input" placeholder="Note title" maxlength="500" autocomplete="off" aria-label="Title">
+        <textarea name="body" class="input note-text" rows="16" maxlength="40000" placeholder="Write your note…" aria-label="Note"></textarea>
+        <div class="field">
+          <span>Linked tasks</span>
+          <ul class="note-links" id="noteTaskList"></ul>
+          <select id="noteTaskAdd" class="select" aria-label="Link a task"></select>
+        </div>
+        <dl class="meta" id="noteMeta"></dl>
+      </div>
+      <div class="drawer-foot">
+        <span class="hint"><kbd>Ctrl</kbd> <kbd>Enter</kbd> to save</span>
+        <span class="spacer"></span>
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn primary">Save note</button>
       </div>
     </form>
   </dialog>
@@ -349,6 +385,6 @@
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
   <script src="vendor/qrcode.js"></script>
-  <script src="app.js?v=9"></script>
+  <script src="app.js?v=10"></script>
 </body>
 </html>

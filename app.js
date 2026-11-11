@@ -17,6 +17,8 @@ const PREFS_KEY = 'taskboard.prefs';
 const LOCAL_TASKS_KEY = 'taskboard.localTasks';
 const CACHE_KEY = 'taskboard.cache';
 const QUEUE_KEY = 'taskboard.queue';
+const LOCAL_NOTES_KEY = 'taskboard.localNotes';
+const NOTES_CACHE_KEY = 'taskboard.notesCache';
 
 // Smart lists in the sidebar. `test` selects tasks; `badge` is the sidebar count.
 const SCOPES = [
@@ -26,6 +28,7 @@ const SCOPES = [
   { id: 'upcoming', label: 'Next 7 days', icon: 'calendar', test: (t) => isOpen(t) && t.dueDate > todayStr() && t.dueDate <= addDays(7) },
   { id: 'overdue', label: 'Overdue', icon: 'alert', test: isOverdue, alert: true },
   { id: 'completed', label: 'Completed', icon: 'done', test: (t) => t.status === 'done' },
+  { id: 'notes', label: 'Notes', icon: 'note', count: () => state.notes.length },
 ];
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -52,6 +55,8 @@ function storageSet(key, value) {
 
 const state = {
   tasks: [],
+  notes: [],
+  noteSearch: '',
   config: storageGet(CONFIG_KEY, { url: '', token: '' }),
   prefs: { view: 'board', hideDone: false, theme: 'system', sort: { key: 'priority', dir: 'asc' }, savedFilters: [], ...storageGet(PREFS_KEY, {}) },
   route: parseRoute(),
@@ -70,7 +75,10 @@ const isRemote = () => Boolean(state.config.url && state.config.token);
 if (isRemote()) {
   // Show the last synced tasks at once; Apps Script can take seconds.
   state.tasks = storageGet(CACHE_KEY, []).map(normalize);
+  state.notes = storageGet(NOTES_CACHE_KEY, []).map(normalizeNote);
   state.loaded = state.tasks.length > 0;
+} else {
+  state.notes = storageGet(LOCAL_NOTES_KEY, []).map(normalizeNote);
 }
 const savePrefs = () => storageSet(PREFS_KEY, state.prefs);
 
@@ -111,11 +119,17 @@ const localStore = {
   read: () => storageGet(LOCAL_TASKS_KEY, []),
   write: (tasks) => storageSet(LOCAL_TASKS_KEY, tasks),
 };
+const localNotes = {
+  read: () => storageGet(LOCAL_NOTES_KEY, []),
+  write: (notes) => storageSet(LOCAL_NOTES_KEY, notes),
+};
 
 const api = {
   async list() {
-    if (isRemote()) return (await remoteCall('list')).tasks;
-    return localStore.read();
+    if (!isRemote()) return { tasks: localStore.read(), notes: localNotes.read() };
+    const data = await remoteCall('list');
+    // A script from before notes existed sends no notes.
+    return { tasks: data.tasks, notes: data.notes || [] };
   },
   async history(id) {
     return (await remoteCall('history', { id })).entries;
@@ -124,6 +138,7 @@ const api = {
 
 // Mirrors what Apps Script does on a write, for local mode.
 function applyLocally(op) {
+  if (opKind(op) === 'note') return applyNoteLocally(op);
   const tasks = localStore.read();
   const now = new Date().toISOString();
   if (op.action === 'delete') {
@@ -142,6 +157,21 @@ function applyLocally(op) {
   const next = finished && task.recurrence ? nextOccurrence(task) : null;
   localStore.write([...tasks.map((t) => (t.id === task.id ? task : t)), ...(next ? [next] : [])]);
   return { ok: true, task, next };
+}
+
+function applyNoteLocally(op) {
+  const notes = localNotes.read();
+  const now = new Date().toISOString();
+  if (op.action === 'deleteNote') {
+    localNotes.write(notes.filter((n) => n.id !== op.id));
+    return { ok: true };
+  }
+  const before = notes.find((n) => n.id === op.note.id);
+  if (op.action === 'updateNote' && !before) return { ok: false, error: 'Note not found.' };
+  const note = { ...op.note, createdAt: before ? before.createdAt : now, updatedAt: now };
+  delete note.baseUpdatedAt;
+  localNotes.write(before ? notes.map((n) => (n.id === note.id ? note : n)) : [...notes, note]);
+  return { ok: true, note };
 }
 
 function advanceDay(key, recurrence, steps) {
@@ -205,13 +235,35 @@ function normalize(task) {
   };
 }
 
-function putLocal(task) {
-  const exists = state.tasks.some((t) => t.id === task.id);
-  state.tasks = exists ? state.tasks.map((t) => (t.id === task.id ? task : t)) : [...state.tasks, task];
+function normalizeNote(note) {
+  return {
+    id: String(note.id),
+    title: note.title || '',
+    body: note.body || '',
+    taskIds: note.taskIds || '',
+    createdAt: note.createdAt || '',
+    updatedAt: note.updatedAt || '',
+  };
 }
-function dropLocal(id) {
-  state.tasks = state.tasks.filter((t) => t.id !== id);
+
+/* Tasks and notes share the write path. An op names its kind by its action
+   (update vs. updateNote) and carries the record as op.task or op.note. */
+const COLLECTION = { task: 'tasks', note: 'notes' };
+const opKind = (op) => (op.action.endsWith('Note') ? 'note' : 'task');
+const opVerb = (op) => op.action.replace(/Note$/, '');
+const opRecord = (op) => op.task || op.note;
+const normalizeAs = (kind, record) => (kind === 'note' ? normalizeNote(record) : normalize(record));
+
+function putIn(kind, record) {
+  const key = COLLECTION[kind];
+  const exists = state[key].some((x) => x.id === record.id);
+  state[key] = exists ? state[key].map((x) => (x.id === record.id ? record : x)) : [...state[key], record];
 }
+function dropFrom(kind, id) {
+  state[COLLECTION[kind]] = state[COLLECTION[kind]].filter((x) => x.id !== id);
+}
+const putLocal = (task) => putIn('task', task);
+const dropLocal = (id) => dropFrom('task', id);
 
 async function loadTasks() {
   const btn = $('#refreshBtn');
@@ -219,8 +271,9 @@ async function loadTasks() {
   try {
     await flushQueue();
     if (!state.queue.length) {
-      const tasks = await withSync(() => api.list());
+      const { tasks, notes } = await withSync(() => api.list());
       state.tasks = tasks.map(normalize);
+      state.notes = notes.map(normalizeNote);
       state.loaded = true;
       saveCache();
     }
@@ -235,7 +288,7 @@ async function loadTasks() {
 
 /* Every write takes this path: one ordered, batched request per user action.
    If the server can't be reached, the change stays on screen and waits in a
-   saved queue. A job is { op, prev }, where prev restores the task on failure. */
+   saved queue. A job is { op, prev }, where prev restores the record on failure. */
 let writeChain = Promise.resolve();
 
 function inOrder(fn) {
@@ -245,7 +298,9 @@ function inOrder(fn) {
 }
 
 function saveCache() {
-  if (isRemote()) storageSet(CACHE_KEY, state.tasks);
+  if (!isRemote()) return;
+  storageSet(CACHE_KEY, state.tasks);
+  storageSet(NOTES_CACHE_KEY, state.notes);
 }
 
 function saveQueue() {
@@ -254,60 +309,66 @@ function saveQueue() {
 }
 
 function opId(op) {
-  return op.task ? op.task.id : op.id;
+  const record = opRecord(op);
+  return record ? record.id : op.id;
 }
 
 // The server compares this with its copy, to catch edits made elsewhere.
 function stampBase(op) {
-  if (op.action !== 'update' || op.force) return;
-  const current = state.tasks.find((t) => t.id === op.task.id);
-  op.task.baseUpdatedAt = op.task.baseUpdatedAt || (current && current.updatedAt) || '';
+  if (opVerb(op) !== 'update' || op.force) return;
+  const record = opRecord(op);
+  const current = state[COLLECTION[opKind(op)]].find((x) => x.id === record.id);
+  record.baseUpdatedAt = record.baseUpdatedAt || (current && current.updatedAt) || '';
 }
 
-// Merges with queued writes for the same task, so a later edit isn't mistaken
+// Merges with queued writes for the same record, so a later edit isn't mistaken
 // for a conflict with an earlier one that hasn't been sent yet.
 function enqueue(op) {
-  const index = state.queue.findIndex((q) => q.action !== 'delete' && opId(q) === opId(op));
+  const field = opKind(op);
+  const verb = opVerb(op);
+  const index = state.queue.findIndex((q) => opVerb(q) !== 'delete' && opId(q) === opId(op));
   const queued = state.queue[index];
-  if (!queued || op.action === 'create') state.queue.push(op);
-  else if (op.action === 'delete' && queued.action === 'create') state.queue.splice(index, 1);
-  else if (op.action === 'delete') state.queue[index] = op;
-  else if (queued.action === 'create') queued.task = op.task;
-  else queued.task = { ...op.task, baseUpdatedAt: queued.task.baseUpdatedAt };
+  if (!queued || verb === 'create') state.queue.push(op);
+  else if (verb === 'delete' && opVerb(queued) === 'create') state.queue.splice(index, 1);
+  else if (verb === 'delete') state.queue[index] = op;
+  else if (opVerb(queued) === 'create') queued[field] = op[field];
+  else queued[field] = { ...op[field], baseUpdatedAt: queued[field].baseUpdatedAt };
 }
 
 function applyResults(jobs, results) {
   let allOk = true;
   results.forEach((result, i) => {
     const { op, prev } = jobs[i];
+    const kind = opKind(op);
     const id = opId(op);
     if (result.ok) {
-      if (result.task && state.tasks.some((t) => t.id === id)) putLocal(normalize(result.task));
+      const saved = result[kind];
+      if (saved && state[COLLECTION[kind]].some((x) => x.id === id)) putIn(kind, normalizeAs(kind, saved));
       if (result.next) putLocal(normalize(result.next));
       return;
     }
     allOk = false;
     if (result.conflict) {
-      const theirs = normalize(result.conflict);
-      putLocal(theirs);
-      toast(`“${theirs.title}” was changed somewhere else, so your edit wasn't saved.`, {
+      const theirs = normalizeAs(kind, result.conflict);
+      putIn(kind, theirs);
+      toast(`“${recordName(kind, theirs)}” was changed somewhere else, so your edit wasn't saved.`, {
         error: true,
-        action: { label: 'Keep mine', run: () => forceSave(op.task) },
+        action: { label: 'Keep mine', run: () => forceSave(kind, opRecord(op)) },
       });
       return;
     }
-    if (prev) putLocal(prev);
-    else if (op.action === 'create') dropLocal(id);
+    if (prev) putIn(kind, prev);
+    else if (opVerb(op) === 'create') dropFrom(kind, id);
     toast(`Not saved: ${result.error}`, { error: true });
   });
   return allOk;
 }
 
-function forceSave(task) {
-  const mine = normalize(task);
-  putLocal(mine);
+function forceSave(kind, record) {
+  const mine = normalizeAs(kind, record);
+  putIn(kind, mine);
   render();
-  return send([{ op: { action: 'update', force: true, task: mine } }]);
+  return send([{ op: { action: kind === 'note' ? 'updateNote' : 'update', force: true, [kind]: mine } }]);
 }
 
 function send(jobs) {
@@ -329,8 +390,8 @@ function send(jobs) {
         return true;
       }
       jobs.forEach(({ op, prev }) => {
-        if (prev) putLocal(prev);
-        else if (op.action === 'create') dropLocal(opId(op));
+        if (prev) putIn(opKind(op), prev);
+        else if (opVerb(op) === 'create') dropFrom(opKind(op), opId(op));
       });
       toast(`Not saved: ${err.message}`, { error: true });
       return false;
@@ -398,6 +459,33 @@ function setStatus(id, status) {
 
 function newTask(fields) {
   return normalize({ id: newId(), title: '', status: 'todo', priority: 'medium', createdAt: new Date().toISOString(), ...fields });
+}
+
+function saveNote(note, isNew) {
+  const prev = isNew ? null : state.notes.find((n) => n.id === note.id);
+  putIn('note', note);
+  render();
+  return send([{ op: { action: isNew ? 'createNote' : 'updateNote', note: { ...note } }, prev }]);
+}
+
+async function deleteNote(id) {
+  const note = state.notes.find((n) => n.id === id);
+  if (!note) return;
+  dropFrom('note', id);
+  render();
+  if (!(await send([{ prev: note, op: { action: 'deleteNote', id } }]))) return;
+  toast(`Deleted “${noteTitle(note)}”`, {
+    action: { label: 'Undo', run: () => saveNote(note, true).then((ok) => ok && toast('Note restored')) },
+  });
+}
+
+/** Links or unlinks a task, saving the note at once. */
+function setNoteLink(noteId, taskId, linked) {
+  const note = state.notes.find((n) => n.id === noteId);
+  if (!note) return;
+  const ids = noteTaskIds(note).filter((id) => id !== taskId);
+  if (linked) ids.push(taskId);
+  return saveNote({ ...note, taskIds: ids.join(',') }, false);
 }
 
 /* ==========================================================================
@@ -495,6 +583,14 @@ const parseChecklist = (text) =>
 const formatChecklist = (items) => items.map((i) => `[${i.done ? 'x' : ' '}] ${i.text}`).join('\n');
 const tagsHtml = (t) => tagList(t).map((x) => `<span class="tag label">${esc(x)}</span>`).join('');
 
+const noteTaskIds = (n) => n.taskIds.split(',').map((x) => x.trim()).filter(Boolean);
+// Untitled notes go by their first line of text.
+const noteTitle = (n) => n.title || n.body.trim().split('\n')[0].slice(0, 80) || 'Untitled note';
+const recordName = (kind, record) => (kind === 'note' ? noteTitle(record) : record.title);
+const notesForTask = (id) => state.notes.filter((n) => noteTaskIds(n).includes(id));
+// Links to deleted tasks are kept (an undo brings the task back) but not shown.
+const noteTasks = (n) => noteTaskIds(n).map((id) => state.tasks.find((t) => t.id === id)).filter(Boolean);
+
 function allTags() {
   return [...new Set(state.tasks.flatMap(tagList))].sort((a, b) => a.localeCompare(b));
 }
@@ -586,6 +682,7 @@ function sortTasks(tasks) {
    ========================================================================== */
 function render() {
   applyTheme();
+  refreshOpenDrawers();
   renderSidebar();
   renderHeader();
   renderBanners();
@@ -593,7 +690,8 @@ function render() {
   renderDatalist();
   renderFilters();
 
-  const isDash = state.route.scope === 'dashboard';
+  const isNotes = state.route.scope === 'notes';
+  const isDash = state.route.scope === 'dashboard' || isNotes;
   $('#toolbar').hidden = isDash;
   $('#hideDoneWrap').hidden = state.route.scope === 'completed';
   $('#hideDone').checked = state.prefs.hideDone;
@@ -606,7 +704,7 @@ function render() {
   const main = $('#main');
   if (isDash) {
     $('#bulkbar').hidden = true;
-    main.innerHTML = dashboardHtml();
+    main.innerHTML = isNotes ? notesPageHtml() : dashboardHtml();
     return;
   }
 
@@ -624,14 +722,17 @@ function render() {
   restoreQuickAdd();
 }
 
+/** Brings the open task drawer's note list up to date after a note changes. */
+function refreshOpenDrawers() {
+  if (drawer.open && editingId) renderTaskNotes();
+}
+
 function renderSidebar() {
   const r = state.route;
   $('#navMain').innerHTML = SCOPES.map((s) => {
     let count = '';
-    if (s.test) {
-      const n = state.tasks.filter(s.badge || s.test).length;
-      if (n) count = `<span class="count ${s.alert ? 'alert' : ''}">${n}</span>`;
-    }
+    const n = s.count ? s.count() : s.test ? state.tasks.filter(s.badge || s.test).length : 0;
+    if (n) count = `<span class="count ${s.alert ? 'alert' : ''}">${n}</span>`;
     const active = r.scope === s.id ? 'active' : '';
     return `<a class="sb-link ${active}" href="${routeHash({ scope: s.id })}" ${active ? 'aria-current="page"' : ''}>
       ${icon(s.icon)}<span class="label">${s.label}</span>${count}</a>`;
@@ -654,9 +755,9 @@ function renderHeader() {
   const r = state.route;
   let crumbs = 'Tasks';
   let title = 'All tasks';
-  if (r.scope === 'dashboard') {
+  if (r.scope === 'dashboard' || r.scope === 'notes') {
     crumbs = 'Workspace';
-    title = 'Dashboard';
+    title = r.scope === 'notes' ? 'Notes' : 'Dashboard';
   } else if (r.scope === 'project') {
     crumbs = 'Projects';
     title = r.project;
@@ -666,6 +767,44 @@ function renderHeader() {
   $('#crumbs').textContent = crumbs;
   $('#pageTitle').textContent = title;
   document.title = `${title} · TaskBoard`;
+  $('#newTaskBtn span').textContent = r.scope === 'notes' ? 'New note' : 'New task';
+}
+
+/* ---------- Notes ---------- */
+function visibleNotes() {
+  const q = state.noteSearch.trim().toLowerCase();
+  return state.notes
+    .filter((n) => !q || `${n.title} ${n.body} ${noteTasks(n).map((t) => t.title).join(' ')}`.toLowerCase().includes(q))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+function notesPageHtml() {
+  const notes = visibleNotes();
+  const search = `<div class="notes-bar">
+      <div class="search-field">${icon('search')}
+        <input id="noteSearch" type="search" placeholder="Search notes" aria-label="Search notes" autocomplete="off" value="${esc(state.noteSearch)}"></div>
+      <span class="spacer"></span><span class="result-count">${plural(notes.length, 'note')}</span></div>`;
+  if (isRemote() && !state.loaded) return `${search}<div class="notes-grid">${'<div class="skeleton" style="height:150px"></div>'.repeat(3)}</div>`;
+  if (!notes.length) {
+    const filtered = Boolean(state.noteSearch.trim());
+    return `${search}<div class="empty-state"><div class="empty-icon">${icon(filtered ? 'search' : 'note')}</div>
+      <h3>${filtered ? 'No matching notes' : 'No notes yet'}</h3>
+      <p>${filtered ? 'Try a different search.' : 'Write down ideas, meeting notes or research, and link them to the tasks they belong to.'}</p>
+      ${filtered ? '' : `<button class="btn primary" data-action="new-note">${icon('plus')}New note</button>`}</div>`;
+  }
+  return `${search}<div class="notes-grid">${notes.map(noteCardHtml).join('')}</div>`;
+}
+
+function noteCardHtml(n) {
+  const tasks = noteTasks(n);
+  const chips = tasks.slice(0, 2).map((t) => `<span class="tag" title="${esc(t.title)}">${icon(t.status === 'done' ? 'done' : 'status')}${esc(t.title)}</span>`).join('');
+  const more = tasks.length > 2 ? `<span class="tag">+${tasks.length - 2}</span>` : '';
+  const body = n.title ? n.body : n.body.trim().split('\n').slice(1).join('\n');
+  return `<article class="note-card" tabindex="0" data-note-id="${esc(n.id)}">
+      <h3 class="note-title">${esc(noteTitle(n))}</h3>
+      ${body.trim() ? `<p class="note-body">${esc(body.trim())}</p>` : ''}
+      <div class="note-foot">${chips}${more}<span class="updated" title="Updated ${esc(fullTime(n.updatedAt))}">${esc(relTime(n.updatedAt))}</span></div>
+    </article>`;
 }
 
 function renderBanners() {
@@ -774,6 +913,7 @@ function cardHtml(t) {
   const done = t.status === 'done';
   const top = projectHtml(t.project) + tagsHtml(t);
   const links = linkList(t).length;
+  const notes = notesForTask(t.id).length;
   const steps = parseChecklist(t.checklist);
   return `
     <article class="card ${done ? 'is-done' : ''}" draggable="true" tabindex="0" data-id="${esc(t.id)}">
@@ -787,6 +927,7 @@ function cardHtml(t) {
         ${priorityHtml(t.priority)}
         ${dueHtml(t)}
         ${links ? `<span class="attach" title="${plural(links, 'link')}">${icon('link')}${links}</span>` : ''}
+        ${notes ? `<span class="attach" title="${plural(notes, 'note')}">${icon('note')}${notes}</span>` : ''}
         ${steps.length ? `<span class="attach" title="Checklist">${icon('checklist')}${steps.filter((x) => x.done).length}/${steps.length}</span>` : ''}
         ${t.recurrence ? `<span class="attach" title="Repeats ${esc(t.recurrence)}">${icon('repeat')}</span>` : ''}
         <span class="updated" title="Updated ${esc(fullTime(t.updatedAt))}">${esc(relTime(t.updatedAt))}</span>
@@ -1098,6 +1239,7 @@ function openTaskDrawer(task = null, defaults = {}) {
     : '';
   draftChecklist = parseChecklist(data.checklist || '');
   renderChecklist();
+  renderTaskNotes();
   loadHistory(task);
   if (!drawer.open) drawer.showModal();
   taskForm.elements.title.focus();
@@ -1179,6 +1321,114 @@ $('#duplicateBtn').addEventListener('click', () => {
   const copy = newTask({ ...source, id: newId(), title: `${source.title} (copy)`, status: 'todo', createdAt: new Date().toISOString() });
   drawer.close();
   saveTask(copy, true).then((ok) => ok && toast('Task duplicated', { action: { label: 'Open', run: () => openTaskDrawer(state.tasks.find((t) => t.id === copy.id)) } }));
+});
+
+/* ---------- Notes inside the task drawer ---------- */
+function renderTaskNotes() {
+  const section = $('#taskNotesSection');
+  section.hidden = !editingId; // A task needs saving before notes can point at it.
+  if (section.hidden) return;
+  const linked = notesForTask(editingId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  $('#taskNotes').innerHTML = linked
+    .map((n) => `<li><button type="button" class="note-link" data-open-note="${esc(n.id)}">${icon('note')}<span>${esc(noteTitle(n))}</span></button>
+      <button type="button" class="icon-btn ghost" data-unlink-note="${esc(n.id)}" aria-label="Unlink “${esc(noteTitle(n))}”" title="Unlink">${icon('x')}</button></li>`)
+    .join('');
+  const others = state.notes.filter((n) => !linked.includes(n)).sort((a, b) => noteTitle(a).localeCompare(noteTitle(b)));
+  const select = $('#taskNoteLink');
+  select.hidden = !others.length;
+  select.innerHTML = `<option value="">Link an existing note…</option>` +
+    others.map((n) => `<option value="${esc(n.id)}">${esc(noteTitle(n))}</option>`).join('');
+}
+
+$('#taskNotes').addEventListener('click', (e) => {
+  const open = e.target.closest('[data-open-note]');
+  if (open) return openNoteDrawer(state.notes.find((n) => n.id === open.dataset.openNote));
+  const unlink = e.target.closest('[data-unlink-note]');
+  if (unlink) setNoteLink(unlink.dataset.unlinkNote, editingId, false);
+});
+$('#taskNoteLink').addEventListener('change', (e) => {
+  if (e.target.value) setNoteLink(e.target.value, editingId, true);
+});
+$('#taskNoteNew').addEventListener('click', () => openNoteDrawer(null, [editingId]));
+
+/* ==========================================================================
+   Note editor
+   ========================================================================== */
+const noteDrawer = $('#noteDrawer');
+const noteForm = $('#noteForm');
+let editingNoteId = null;
+let draftTaskIds = [];
+
+function openNoteDrawer(note = null, taskIds = []) {
+  editingNoteId = note ? note.id : null;
+  noteForm.elements.title.value = note ? note.title : '';
+  noteForm.elements.body.value = note ? note.body : '';
+  draftTaskIds = note ? noteTaskIds(note) : [...taskIds];
+  $('#noteDrawerLabel').textContent = note ? 'Note' : 'New note';
+  $('#deleteNoteBtn').hidden = !note;
+  $('#noteMeta').innerHTML = note
+    ? `<dt>Created</dt><dd>${esc(fullTime(note.createdAt) || '—')}</dd><dt>Last updated</dt><dd>${esc(fullTime(note.updatedAt) || '—')}</dd>`
+    : '';
+  renderNoteTasks();
+  if (!noteDrawer.open) noteDrawer.showModal();
+  (note ? noteForm.elements.body : noteForm.elements.title).focus();
+}
+
+function renderNoteTasks() {
+  const linked = draftTaskIds.map((id) => state.tasks.find((t) => t.id === id)).filter(Boolean);
+  $('#noteTaskList').innerHTML = linked.length
+    ? linked
+        .map((t) => `<li><button type="button" class="note-link" data-open-task="${esc(t.id)}">${icon(t.status === 'done' ? 'done' : 'status')}<span>${esc(t.title)}</span></button>
+          <button type="button" class="icon-btn ghost" data-unlink-task="${esc(t.id)}" aria-label="Unlink “${esc(t.title)}”" title="Unlink">${icon('x')}</button></li>`)
+        .join('')
+    : '<li class="muted">Not linked to any task.</li>';
+  const options = state.tasks
+    .filter((t) => !draftTaskIds.includes(t.id))
+    .sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || a.title.localeCompare(b.title));
+  $('#noteTaskAdd').innerHTML = `<option value="">Link a task…</option>` +
+    options.map((t) => `<option value="${esc(t.id)}">${esc(t.title)}${t.status === 'done' ? ' (done)' : ''}</option>`).join('');
+  $('#noteTaskAdd').hidden = !options.length;
+}
+
+$('#noteTaskAdd').addEventListener('change', (e) => {
+  if (!e.target.value) return;
+  draftTaskIds.push(e.target.value);
+  renderNoteTasks();
+});
+$('#noteTaskList').addEventListener('click', (e) => {
+  const unlink = e.target.closest('[data-unlink-task]');
+  if (unlink) {
+    draftTaskIds = draftTaskIds.filter((id) => id !== unlink.dataset.unlinkTask);
+    return renderNoteTasks();
+  }
+  const open = e.target.closest('[data-open-task]');
+  const task = open && state.tasks.find((t) => t.id === open.dataset.openTask);
+  if (!task) return;
+  // The task drawer may already be open underneath; reuse it rather than stacking a second.
+  noteDrawer.close();
+  openTaskDrawer(task);
+});
+
+noteForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const f = noteForm.elements;
+  const fields = { title: f.title.value.trim(), body: f.body.value.replace(/\s+$/, ''), taskIds: draftTaskIds.join(',') };
+  if (!fields.title && !fields.body.trim()) return f.body.focus();
+  const existing = state.notes.find((n) => n.id === editingNoteId);
+  if (existing) saveNote({ ...existing, ...fields }, false);
+  else saveNote(normalizeNote({ id: newId(), createdAt: new Date().toISOString(), ...fields }), true).then((ok) => ok && toast('Note created'));
+  noteDrawer.close();
+});
+noteForm.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    noteForm.requestSubmit();
+  }
+});
+$('#deleteNoteBtn').addEventListener('click', () => {
+  const id = editingNoteId;
+  noteDrawer.close();
+  deleteNote(id);
 });
 
 // Close dialogs when clicking the backdrop.
@@ -1344,6 +1594,7 @@ function paletteCommands() {
   const proj = projects().map((p) => ({ group: 'Projects', icon: 'folder', label: p, run: () => go({ scope: 'project', project: p }) }));
   const actions = [
     { group: 'Actions', icon: 'plus', label: 'Create new task', hint: 'N', run: () => openTaskDrawer() },
+    { group: 'Actions', icon: 'note', label: 'Create new note', run: () => openNoteDrawer() },
     { group: 'Actions', icon: 'board', label: 'Switch to board view', run: () => setView('board') },
     { group: 'Actions', icon: 'table', label: 'Switch to table view', run: () => setView('table') },
     { group: 'Actions', icon: 'calendar', label: 'Switch to calendar view', run: () => setView('calendar') },
@@ -1371,7 +1622,13 @@ function buildPalette() {
       hint: t.project || STATUS_LABEL[t.status],
       run: () => openTaskDrawer(state.tasks.find((x) => x.id === t.id)),
     }));
-  paletteItems = q ? [...tasks, ...commands] : [...commands.slice(0, 1), ...tasks, ...commands.slice(1)];
+  const notes = q
+    ? state.notes
+        .filter((n) => `${n.title} ${n.body}`.toLowerCase().includes(q))
+        .slice(0, 5)
+        .map((n) => ({ group: 'Notes', icon: 'note', label: noteTitle(n), run: () => openNoteDrawer(state.notes.find((x) => x.id === n.id)) }))
+    : [];
+  paletteItems = q ? [...tasks, ...notes, ...commands] : [...commands.slice(0, 1), ...tasks, ...commands.slice(1)];
   paletteIndex = Math.min(paletteIndex, Math.max(paletteItems.length - 1, 0));
 
   if (!paletteItems.length) {
@@ -1478,9 +1735,13 @@ main.addEventListener('click', (e) => {
   const action = t.closest('[data-action]');
   if (action) {
     if (action.dataset.action === 'new') openTaskDrawer();
+    if (action.dataset.action === 'new-note') openNoteDrawer();
     if (action.dataset.action === 'clear-filters') clearFilters();
     return;
   }
+
+  const noteCard = t.closest('[data-note-id]');
+  if (noteCard) return openNoteDrawer(state.notes.find((n) => n.id === noteCard.dataset.noteId));
 
   const calNav = t.closest('[data-cal-nav]');
   if (calNav) {
@@ -1556,6 +1817,8 @@ main.addEventListener('keydown', (e) => {
     return;
   }
   if (e.key !== 'Enter' || e.target.matches('input, button, a')) return;
+  const noteCard = e.target.closest('[data-note-id]');
+  if (noteCard) return openNoteDrawer(state.notes.find((n) => n.id === noteCard.dataset.noteId));
   const item = e.target.closest('[data-id]');
   const task = item && state.tasks.find((t) => t.id === item.dataset.id);
   if (task) openTaskDrawer(task);
@@ -1563,6 +1826,14 @@ main.addEventListener('keydown', (e) => {
 
 main.addEventListener('input', (e) => {
   if (e.target.classList.contains('quick-input') && state.quickAdd) state.quickAdd.text = e.target.value;
+  if (e.target.id === 'noteSearch') {
+    state.noteSearch = e.target.value;
+    const caret = e.target.selectionStart;
+    render();
+    const input = $('#noteSearch');
+    input.focus();
+    input.setSelectionRange(caret, caret);
+  }
 });
 main.addEventListener('focusout', (e) => {
   const quick = e.target.closest('.quick-input');
@@ -1763,7 +2034,8 @@ $('#bulkPriority').addEventListener('change', (e) => {
   e.target.value = '';
 });
 
-$('#newTaskBtn').addEventListener('click', () => openTaskDrawer());
+const openNew = () => (state.route.scope === 'notes' ? openNoteDrawer() : openTaskDrawer());
+$('#newTaskBtn').addEventListener('click', openNew);
 $('#refreshBtn').addEventListener('click', loadTasks);
 $('#themeBtn').addEventListener('click', () => setTheme(THEME_NEXT[state.prefs.theme] || 'system'));
 $('#settingsBtn').addEventListener('click', openSettings);
@@ -1783,11 +2055,11 @@ document.addEventListener('keydown', (e) => {
   if (typing || e.ctrlKey || e.metaKey || e.altKey || document.querySelector('dialog[open]')) return;
   if (e.key === 'n') {
     e.preventDefault();
-    openTaskDrawer();
+    openNew();
   } else if (e.key === '/') {
     if (state.route.scope === 'dashboard') return;
     e.preventDefault();
-    $('#search').focus();
+    $(state.route.scope === 'notes' ? '#noteSearch' : '#search').focus();
   } else if (e.key === 'Escape' && state.selection.size) {
     state.selection.clear();
     render();
@@ -1799,7 +2071,7 @@ window.addEventListener('online', loadTasks);
 
 // Pick up edits made directly in the sheet (or on another device) when returning to the tab.
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && isRemote() && !state.pending && !drawer.open) loadTasks();
+  if (document.visibilityState === 'visible' && isRemote() && !state.pending && !drawer.open && !noteDrawer.open) loadTasks();
 });
 
 /* ==========================================================================

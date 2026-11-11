@@ -3,11 +3,38 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:taskboard/models/note.dart';
 import 'package:taskboard/models/task.dart';
 import 'package:taskboard/services/api.dart';
 import 'package:taskboard/services/setup_link.dart';
 
 void main() {
+  group('Note', () {
+    test('survives a JSON round trip', () {
+      const note = Note(id: 'n', title: 'Plan', body: 'Line one\nLine two', taskIds: ['a', 'b']);
+      expect(Note.fromJson(note.toJson()).toJson(), note.toJson());
+      expect(note.toJson()['taskIds'], 'a,b');
+    });
+
+    test('untitled notes go by their first line', () {
+      const note = Note(id: 'n', body: '\nIdea for the trip\nBook early');
+      expect(note.displayTitle, 'Idea for the trip');
+      expect(note.preview, 'Book early');
+      expect(const Note(id: 'n').displayTitle, 'Untitled note');
+    });
+
+    test('titled notes show their whole text as the preview', () {
+      const note = Note(id: 'n', title: 'Plan', body: 'Line one\nLine two');
+      expect(note.displayTitle, 'Plan');
+      expect(note.preview, 'Line one\nLine two');
+    });
+
+    test('ignores blank task links', () {
+      expect(Note.fromJson({'id': 1, 'taskIds': ' , a ,,'}).taskIds, ['a']);
+      expect(Note.fromJson({'id': 1}).taskIds, isEmpty);
+    });
+  });
+
   group('Task', () {
     test('survives a JSON round trip', () {
       const task = Task(
@@ -130,9 +157,25 @@ void main() {
           200,
         );
       });
-      final tasks = await TaskApi(url: 'https://script.google.com/x/exec', token: 't', client: client).list();
+      final data = await TaskApi(url: 'https://script.google.com/x/exec', token: 't', client: client).list();
       expect(calls, ['POST', 'GET']);
-      expect(tasks.single.status, TaskStatus.done);
+      expect(data.tasks.single.status, TaskStatus.done);
+      expect(data.notes, isEmpty, reason: 'a script from before notes sends none');
+    });
+
+    test('reads notes with their linked tasks', () async {
+      final client = MockClient((_) async => http.Response(
+            jsonEncode({
+              'ok': true,
+              'tasks': [],
+              'notes': [
+                {'id': 'n1', 'title': 'Plan', 'body': 'Steps', 'taskIds': 't1, t2'},
+              ],
+            }),
+            200,
+          ));
+      final data = await TaskApi(url: 'https://script.google.com/x/exec', token: 't', client: client).list();
+      expect(data.notes.single.taskIds, ['t1', 't2']);
     });
 
     test('reports the server error message', () async {

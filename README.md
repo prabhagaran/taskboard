@@ -11,6 +11,7 @@ A lightweight personal task manager. The frontend is a static site (hosted free 
 - **Tags and saved filters:** label tasks and keep filter combinations (saved per device)
 - **Links:** attach Google Drive files or any web link to a task
 - **Task history:** every change is logged to a `History` sheet and shown on the task
+- **Notes:** a Notes page for ideas, meeting notes and research. Link a note to any number of tasks; each task lists its notes and can start a new one
 - **Repeating tasks and checklists:** finishing a repeating task creates the next one, and steps show progress on the card
 - **Offline edits:** changes wait in a queue and sync when you reconnect
 - **Conflict warnings:** if a task changed on another device, you choose whether to keep your edit
@@ -73,7 +74,7 @@ To add another device, open **Connection settings** on one that's connected and 
 
 ## Android app
 
-[`mobile/`](mobile/) is a Flutter app that uses the same Google Sheet and web app. It has Today, Tasks, Calendar, and Dashboard screens, a scrollable home-screen widget listing all open tasks, swipe to complete or delete, hold and drag to reorder, and a tablet layout. Offline, it shows your last synced tasks and queues your changes until you reconnect. Turn on **Due date reminders** in Settings for a notification at 9:00 on days with tasks due.
+[`mobile/`](mobile/) is a Flutter app that uses the same Google Sheet and web app. It has Today, Tasks, Notes, Calendar, and Dashboard screens, a scrollable home-screen widget listing all open tasks, swipe to complete or delete, hold and drag to reorder, and a tablet layout. Offline, it shows your last synced tasks and queues your changes until you reconnect. Turn on **Due date reminders** in Settings for a notification at 9:00 on days with tasks due.
 
 ```bash
 cd mobile
@@ -101,6 +102,14 @@ Older sheets gain any missing columns automatically the first time a new script 
 - `completedAt`: set automatically when a task is finished
 - `recurrence`: blank, `daily`, `weekly`, `monthly` or `yearly`
 - `checklist`: one step per line, as `[ ] step` or `[x] step`
+
+Notes live in a separate `Notes` sheet, created the first time the app loads:
+
+| id | title | body | taskIds | createdAt | updatedAt |
+|----|-------|------|---------|-----------|-----------|
+
+- `taskIds`: comma-separated IDs of the linked tasks
+- A note needs a title or some text; the body holds up to 40,000 characters
 
 You can edit rows directly in the sheet. The app picks up changes when you click refresh or switch back to its tab.
 

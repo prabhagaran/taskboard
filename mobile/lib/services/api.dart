@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import '../models/note.dart';
 import '../models/task.dart';
 
 class ApiException implements Exception {
@@ -29,11 +30,17 @@ class TaskApi {
 
   static const _timeout = Duration(seconds: 30);
 
-  Future<List<Task>> list() async {
+  Future<({List<Task> tasks, List<Note> notes})> list() async {
     final data = await _call('list');
-    return (data['tasks'] as List)
-        .map((t) => Task.fromJson(t as Map<String, dynamic>))
-        .toList();
+    return (
+      tasks: (data['tasks'] as List)
+          .map((t) => Task.fromJson(t as Map<String, dynamic>))
+          .toList(),
+      // A script from before notes existed sends no notes.
+      notes: ((data['notes'] as List?) ?? const [])
+          .map((n) => Note.fromJson(n as Map<String, dynamic>))
+          .toList(),
+    );
   }
 
   /// Applies writes in order under one lock; each op reports its own result.

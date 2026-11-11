@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../models/note.dart';
 import '../models/task.dart';
+import '../screens/note_editor.dart';
 import '../screens/task_editor.dart';
 import '../services/store.dart';
 
@@ -72,6 +74,20 @@ void deleteWithUndo(TaskStore store, Task task) {
   showAction('Deleted "${task.title}"', 'Undo', () => store.add(task));
 }
 
+Future<void> openNoteEditor(BuildContext context, {Note? note, List<String> taskIds = const []}) =>
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        fullscreenDialog: note == null,
+        builder: (_) => NoteEditor(note: note, taskIds: taskIds),
+      ),
+    );
+
+/// Deletes [note] and offers an undo.
+void deleteNoteWithUndo(TaskStore store, Note note) {
+  store.removeNote(note);
+  showAction('Deleted "${note.displayTitle}"', 'Undo', () => store.addNote(note));
+}
+
 class TaskTile extends StatelessWidget {
   const TaskTile({super.key, required this.task});
 
@@ -83,6 +99,7 @@ class TaskTile extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final text = Theme.of(context).textTheme;
     final done = task.status == TaskStatus.done;
+    final notes = store.notesFor(task.id).length;
 
     return Dismissible(
       key: ValueKey(task.id),
@@ -147,6 +164,8 @@ class TaskTile extends StatelessWidget {
                 _Meta(icon: Icons.sell_outlined, label: task.tagList.join(', ')),
               if (task.linkList.isNotEmpty)
                 _Meta(icon: Icons.link, label: '${task.linkList.length}'),
+              if (notes > 0)
+                _Meta(icon: Icons.sticky_note_2_outlined, label: '$notes'),
               if (task.steps.isNotEmpty)
                 _Meta(
                   icon: Icons.checklist,

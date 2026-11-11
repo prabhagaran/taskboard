@@ -7,6 +7,7 @@ import '../models/task.dart';
 import '../services/api.dart';
 import '../services/store.dart';
 import '../widgets/common.dart';
+import 'note_editor.dart';
 
 class TaskEditor extends StatefulWidget {
   const TaskEditor({super.key, this.task, this.initialDueDate = ''});
@@ -112,6 +113,52 @@ class _TaskEditorState extends State<TaskEditor> {
   void _delete() {
     deleteWithUndo(StoreScope.of(context), widget.task!);
     Navigator.of(context).pop();
+  }
+
+  List<Widget> _notesSection(BuildContext context, TaskStore store) {
+    final id = widget.task!.id;
+    final notes = store.notesFor(id);
+    return [
+      const SizedBox(height: 20),
+      Text('Notes', style: Theme.of(context).textTheme.labelLarge),
+      for (final note in notes)
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.sticky_note_2_outlined),
+          title: Text(note.displayTitle, maxLines: 1, overflow: TextOverflow.ellipsis),
+          subtitle: note.preview.isEmpty
+              ? null
+              : Text(note.preview, maxLines: 1, overflow: TextOverflow.ellipsis),
+          trailing: IconButton(
+            tooltip: 'Unlink',
+            icon: const Icon(Icons.link_off),
+            onPressed: () => store.linkNote(note, id, false),
+          ),
+          onTap: () => openNoteEditor(context, note: note),
+        ),
+      const SizedBox(height: 8),
+      Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          OutlinedButton.icon(
+            onPressed: () => openNoteEditor(context, taskIds: [id]),
+            icon: const Icon(Icons.add),
+            label: const Text('New note'),
+          ),
+          if (store.notes.length > notes.length)
+            OutlinedButton.icon(
+              onPressed: () async {
+                final note = await pickNote(context, exclude: [for (final n in notes) n.id]);
+                if (note != null) store.linkNote(note, id, true);
+              },
+              icon: const Icon(Icons.add_link),
+              label: const Text('Link a note'),
+            ),
+        ],
+      ),
+      const SizedBox(height: 8),
+    ];
   }
 
   Future<void> _openLink(String link) async {
@@ -324,6 +371,7 @@ class _TaskEditorState extends State<TaskEditor> {
                 title: Text(link, maxLines: 1, overflow: TextOverflow.ellipsis),
                 onTap: () => _openLink(link),
               ),
+            if (!_isNew) ..._notesSection(context, store),
             if (!_isNew)
               ExpansionTile(
                 tilePadding: EdgeInsets.zero,

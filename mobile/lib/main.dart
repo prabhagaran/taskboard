@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'screens/calendar_screen.dart';
 import 'screens/dashboard_screen.dart';
+import 'screens/notes_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/tasks_screen.dart';
 import 'screens/today_screen.dart';
@@ -17,6 +18,11 @@ void main() {
         'Keep mine',
         () => store.forceEdit(mine),
       );
+  store.onNoteConflict = (mine, theirs) => showAction(
+        '"${theirs.displayTitle}" was changed somewhere else, so your edit wasn\'t saved.',
+        'Keep mine',
+        () => store.forceEditNote(mine),
+      );
   store.init();
   runApp(StoreScope(store: store, child: const TaskBoardApp()));
 }
@@ -29,6 +35,7 @@ const _railWidth = 600.0;
 const _destinations = [
   (Icons.today_outlined, Icons.today, 'Today'),
   (Icons.checklist_outlined, Icons.checklist, 'Tasks'),
+  (Icons.sticky_note_2_outlined, Icons.sticky_note_2, 'Notes'),
   (Icons.calendar_month_outlined, Icons.calendar_month, 'Calendar'),
   (Icons.insights_outlined, Icons.insights, 'Dashboard'),
   (Icons.settings_outlined, Icons.settings, 'Settings'),
@@ -97,6 +104,7 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
       children: const [
         TodayScreen(),
         TasksScreen(),
+        NotesScreen(),
         CalendarScreen(),
         DashboardScreen(),
         SettingsScreen(),

@@ -17,6 +17,7 @@
 const SHEET_NAME = 'Tasks';
 const HISTORY_SHEET = 'History';
 const DEVICES_SHEET = 'Devices';
+const NOTES_SHEET = 'Notes';
 const CALENDAR_NAME = 'TaskBoard';
 const BACKUP_FOLDER = 'TaskBoard backups';
 const BACKUPS_KEPT = 14;
@@ -26,6 +27,9 @@ const BACKUP_HOUR = 2;
 const HEADERS = ['id', 'title', 'description', 'status', 'priority', 'project', 'dueDate', 'createdAt', 'updatedAt', 'tags', 'links', 'sortOrder', 'completedAt', 'recurrence', 'checklist'];
 const HISTORY_HEADERS = ['at', 'taskId', 'title', 'action', 'details'];
 const DEVICE_HEADERS = ['name', 'token'];
+// taskIds is a comma-separated list of the tasks a note is linked to.
+const NOTE_HEADERS = ['id', 'title', 'body', 'taskIds', 'createdAt', 'updatedAt'];
+const NOTE_BODY_MAX = 40000; // A Sheets cell holds at most 50,000 characters.
 const EDITABLE = ['title', 'description', 'status', 'priority', 'project', 'dueDate', 'tags', 'links', 'sortOrder', 'recurrence', 'checklist'];
 const TRACKED = ['title', 'description', 'status', 'priority', 'project', 'dueDate', 'tags', 'links', 'recurrence', 'checklist'];
 const STATUSES = ['todo', 'inprogress', 'done'];
@@ -215,7 +219,7 @@ function failure_(err) {
 }
 
 function route_(req) {
-  if (req.action === 'list') return { tasks: readTasks_(getSheet_()) };
+  if (req.action === 'list') return { tasks: readTasks_(getSheet_()), notes: readNotes_(getNotesSheet_()) };
   if (req.action === 'history') return { entries: readHistory_(req.id) };
 
   // Serialize writes so concurrent requests can't clobber row positions.
@@ -250,6 +254,16 @@ function applyWrite_(sheet, op) {
     case 'delete':
       deleteTask_(sheet, op.id);
       return {};
+    case 'createNote':
+      return { note: createNote_(getNotesSheet_(), op.note || {}) };
+    case 'updateNote':
+      return { note: updateNote_(getNotesSheet_(), op.note || {}, op.force === true) };
+    case 'deleteNote': {
+      const notes = getNotesSheet_();
+      const rowIndex = findRow_(notes, op.id);
+      if (rowIndex) notes.deleteRow(rowIndex);
+      return {};
+    }
     default:
       throw new Error('Unknown action: ' + op.action);
   }
@@ -283,13 +297,21 @@ function ensureColumns_(sheet, headers) {
 }
 
 function getHistorySheet_() {
+  return getOrCreateSheet_(HISTORY_SHEET, HISTORY_HEADERS);
+}
+
+function getNotesSheet_() {
+  return getOrCreateSheet_(NOTES_SHEET, NOTE_HEADERS);
+}
+
+function getOrCreateSheet_(name, headers) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  let sheet = ss.getSheetByName(HISTORY_SHEET);
+  let sheet = ss.getSheetByName(name);
   if (!sheet) {
-    sheet = ss.insertSheet(HISTORY_SHEET);
+    sheet = ss.insertSheet(name);
     sheet.setFrozenRows(1);
   }
-  ensureColumns_(sheet, HISTORY_HEADERS);
+  ensureColumns_(sheet, headers);
   return sheet;
 }
 
@@ -420,6 +442,75 @@ function deleteTask_(sheet, id) {
   const task = rowToTask_(sheet.getRange(rowIndex, 1, 1, HEADERS.length).getValues()[0]);
   sheet.deleteRow(rowIndex);
   logHistory_(task, 'deleted', '');
+}
+
+function readNotes_(sheet) {
+  const last = sheet.getLastRow();
+  if (last < 2) return [];
+  return sheet
+    .getRange(2, 1, last - 1, NOTE_HEADERS.length)
+    .getValues()
+    .filter(function (row) { return row[0] !== ''; })
+    .map(rowToNote_);
+}
+
+function createNote_(sheet, input) {
+  const note = cleanNote_(input, { title: '', body: '', taskIds: '' });
+  const id = String(input.id || '');
+  const validId = /^[\w-]{1,64}$/.test(id);
+  // A retried create (say, after a lost response) must not add a second copy.
+  const existing = validId ? findRow_(sheet, id) : 0;
+  if (existing) return rowToNote_(sheet.getRange(existing, 1, 1, NOTE_HEADERS.length).getValues()[0]);
+  note.id = validId ? id : Utilities.getUuid();
+  note.createdAt = note.updatedAt = new Date().toISOString();
+  sheet.appendRow(noteToRow_(note));
+  return note;
+}
+
+function updateNote_(sheet, input, force) {
+  const rowIndex = findRow_(sheet, input.id);
+  if (!rowIndex) throw new Error('Note not found. It may have been deleted.');
+  const range = sheet.getRange(rowIndex, 1, 1, NOTE_HEADERS.length);
+  const before = rowToNote_(range.getValues()[0]);
+  if (!force && input.baseUpdatedAt && input.baseUpdatedAt !== before.updatedAt) {
+    const conflict = new Error('This note was changed somewhere else.');
+    conflict.conflict = before;
+    throw conflict;
+  }
+  const note = cleanNote_(input, before);
+  note.updatedAt = new Date().toISOString();
+  range.setValues([noteToRow_(note)]);
+  return note;
+}
+
+function cleanNote_(input, base) {
+  const note = Object.assign({}, base);
+  ['title', 'body', 'taskIds'].forEach(function (key) {
+    if (input[key] !== undefined && input[key] !== null) note[key] = String(input[key]);
+  });
+  note.title = note.title.trim();
+  note.body = note.body.replace(/\s+$/, '');
+  if (!note.title && !note.body.trim()) throw new Error('A note needs a title or some text.');
+  if (note.title.length > 500) throw new Error('Title is too long.');
+  if (note.body.length > NOTE_BODY_MAX) throw new Error('Note is too long.');
+  const ids = note.taskIds
+    .split(',')
+    .map(function (id) { return id.trim(); })
+    .filter(function (id) { return /^[\w-]{1,64}$/.test(id); });
+  note.taskIds = ids.filter(function (id, i) { return ids.indexOf(id) === i; }).join(',');
+  return note;
+}
+
+function rowToNote_(row) {
+  const note = {};
+  NOTE_HEADERS.forEach(function (header, i) {
+    note[header] = row[i] == null ? '' : String(row[i]);
+  });
+  return note;
+}
+
+function noteToRow_(note) {
+  return NOTE_HEADERS.map(function (header) { return safeCell_(note[header]); });
 }
 
 function findRow_(sheet, id) {

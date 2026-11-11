@@ -8,12 +8,14 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:home_widget/home_widget.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/note.dart';
 import '../models/task.dart';
 import 'api.dart';
 import 'reminders.dart';
 
 const _urlKey = 'url';
 const _cacheKey = 'tasks';
+const _notesCacheKey = 'notes';
 const _themeKey = 'theme';
 const _tokenKey = 'token';
 const _filtersKey = 'savedFilters';
@@ -22,11 +24,15 @@ const _remindersKey = 'reminders';
 const _widgetProvider = 'TaskBoardWidget';
 
 /// A write to send, and what to restore if the server refuses it.
+/// Note writes are named createNote, updateNote and deleteNote and carry
+/// op['note']; task writes carry op['task'].
 class _Job {
   _Job(this.op, [this.previous]);
 
   final Map<String, dynamic> op;
-  final Task? previous;
+
+  /// The [Task] or [Note] as it was before this write.
+  final Object? previous;
 }
 
 /// App state. Edits apply immediately. If the server can't be reached they wait
@@ -44,6 +50,9 @@ class TaskStore extends ChangeNotifier {
   /// Offers to overwrite a task that changed elsewhere; set by the app shell.
   void Function(Task mine, Task theirs) onConflict = (_, _) {};
 
+  /// Offers to overwrite a note that changed elsewhere; set by the app shell.
+  void Function(Note mine, Note theirs) onNoteConflict = (_, _) {};
+
   /// Shows that waiting changes were sent; set by the app shell.
   void Function(int count) onSynced = (_) {};
 
@@ -52,6 +61,7 @@ class TaskStore extends ChangeNotifier {
   bool remindersOn = false;
   String? syncError;
   List<Task> tasks = [];
+  List<Note> notes = [];
   List<SavedFilter> savedFilters = [];
   List<Map<String, dynamic>> queue = [];
   ThemeMode themeMode = ThemeMode.system;
@@ -70,6 +80,15 @@ class TaskStore extends ChangeNotifier {
   }
 
   Future<List<HistoryEntry>> history(String id) => _api!.history(id);
+
+  /// Notes linked to the task with [taskId], most recently edited first.
+  List<Note> notesFor(String taskId) => notes.where((n) => n.taskIds.contains(taskId)).toList()
+    ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+
+  /// Linked tasks that still exist; links to deleted tasks stay so an undo restores them.
+  List<Task> tasksFor(Note note) => [
+        for (final id in note.taskIds) ...tasks.where((t) => t.id == id),
+      ];
 
   Future<void> saveFilter(SavedFilter filter) async {
     savedFilters = [...savedFilters.where((f) => f.name != filter.name), filter];
@@ -116,6 +135,12 @@ class TaskStore extends ChangeNotifier {
             .map((t) => Task.fromJson(t as Map<String, dynamic>))
             .toList();
       }
+      final cachedNotes = _prefs.getString(_notesCacheKey);
+      if (cachedNotes != null) {
+        notes = (jsonDecode(cachedNotes) as List)
+            .map((n) => Note.fromJson(n as Map<String, dynamic>))
+            .toList();
+      }
     }
     ready = true;
     notifyListeners();
@@ -136,7 +161,9 @@ class TaskStore extends ChangeNotifier {
       try {
         await _flush(api);
         if (queue.isEmpty) {
-          tasks = await api.list();
+          final data = await api.list();
+          tasks = data.tasks;
+          notes = data.notes;
           _saveCache();
         }
         syncError = null;
@@ -150,7 +177,7 @@ class TaskStore extends ChangeNotifier {
 
   /// Returns the number of tasks in the sheet, or throws [ApiException].
   Future<int> testConnection(String url, String token) async =>
-      (await TaskApi(url: url, token: token).list()).length;
+      (await TaskApi(url: url, token: token).list()).tasks.length;
 
   Future<void> connect(String newUrl, String token) async {
     url = newUrl;
@@ -175,8 +202,10 @@ class TaskStore extends ChangeNotifier {
 
   Future<void> _clearLocalData() async {
     tasks = [];
+    notes = [];
     queue = [];
     await _prefs.remove(_cacheKey);
+    await _prefs.remove(_notesCacheKey);
     await _prefs.remove(_queueKey);
   }
 
@@ -231,6 +260,39 @@ class TaskStore extends ChangeNotifier {
     return _send([_Job({'action': 'delete', 'id': task.id}, task)]);
   }
 
+  Future<void> addNote(Note note) {
+    notes = [...notes, note];
+    notifyListeners();
+    return _send([_Job({'action': 'createNote', 'note': note.toJson()})]);
+  }
+
+  Future<void> editNote(Note note) {
+    final previous = notes.firstWhere((n) => n.id == note.id);
+    _replaceNote(note);
+    notifyListeners();
+    return _send([_Job({'action': 'updateNote', 'note': note.toJson()}, previous)]);
+  }
+
+  /// Saves [note] over a newer copy, after the user chose to keep their edit.
+  Future<void> forceEditNote(Note note) {
+    _replaceNote(note);
+    notifyListeners();
+    return _send([_Job({'action': 'updateNote', 'force': true, 'note': note.toJson()})]);
+  }
+
+  Future<void> removeNote(Note note) {
+    _removeNote(note.id);
+    notifyListeners();
+    return _send([_Job({'action': 'deleteNote', 'id': note.id}, note)]);
+  }
+
+  /// Links or unlinks a task, saving the note at once.
+  Future<void> linkNote(Note note, String taskId, bool linked) {
+    final ids = note.taskIds.where((id) => id != taskId).toList();
+    if (linked) ids.add(taskId);
+    return editNote(note.copyWith(taskIds: ids));
+  }
+
   /// Moves a task within [column], which must be sorted by [compareManual].
   /// Normally one write; cards with no position yet are numbered the first time.
   Future<void> reorder(List<Task> column, int oldIndex, int index) async {
@@ -268,37 +330,49 @@ class TaskStore extends ChangeNotifier {
     return run;
   }
 
-  // The server compares this with its copy, to catch edits made elsewhere.
-  void _stampBase(Map<String, dynamic> op) {
-    if (op['action'] != 'update' || op['force'] == true) return;
-    final task = op['task'] as Map<String, dynamic>;
-    final current = tasks.where((t) => t.id == task['id']).firstOrNull;
-    task['baseUpdatedAt'] ??= current?.updatedAt ?? '';
+  static bool _isNote(Map<String, dynamic> op) => '${op['action']}'.endsWith('Note');
+
+  /// create, update or delete, whichever kind of record the op is for.
+  static String _verb(Map<String, dynamic> op) => '${op['action']}'.replaceFirst(RegExp(r'Note$'), '');
+
+  static String _field(Map<String, dynamic> op) => _isNote(op) ? 'note' : 'task';
+
+  static String _opId(Map<String, dynamic> op) {
+    final record = op[_field(op)] as Map?;
+    return '${record == null ? op['id'] : record['id']}';
   }
 
-  static String _opId(Map<String, dynamic> op) =>
-      '${op['task'] == null ? op['id'] : (op['task'] as Map)['id']}';
+  // The server compares this with its copy, to catch edits made elsewhere.
+  void _stampBase(Map<String, dynamic> op) {
+    if (_verb(op) != 'update' || op['force'] == true) return;
+    final record = op[_field(op)] as Map<String, dynamic>;
+    final current = _isNote(op)
+        ? notes.where((n) => n.id == record['id']).firstOrNull?.updatedAt
+        : tasks.where((t) => t.id == record['id']).firstOrNull?.updatedAt;
+    record['baseUpdatedAt'] ??= current ?? '';
+  }
 
-  // Merges with queued writes for the same task, so a later edit isn't mistaken
+  // Merges with queued writes for the same record, so a later edit isn't mistaken
   // for a conflict with an earlier one that hasn't been sent yet.
   void _enqueue(Map<String, dynamic> op) {
-    final index = queue.indexWhere((q) => q['action'] != 'delete' && _opId(q) == _opId(op));
-    if (index < 0 || op['action'] == 'create') {
+    final field = _field(op);
+    final index = queue.indexWhere((q) => _verb(q) != 'delete' && _opId(q) == _opId(op));
+    if (index < 0 || _verb(op) == 'create') {
       queue.add(op);
       return;
     }
     final queued = queue[index];
-    if (op['action'] == 'delete') {
-      if (queued['action'] == 'create') {
+    if (_verb(op) == 'delete') {
+      if (_verb(queued) == 'create') {
         queue.removeAt(index);
       } else {
         queue[index] = op;
       }
-    } else if (queued['action'] == 'create') {
-      queued['task'] = op['task'];
+    } else if (_verb(queued) == 'create') {
+      queued[field] = op[field];
     } else {
-      final base = (queued['task'] as Map)['baseUpdatedAt'];
-      queued['task'] = {...op['task'] as Map<String, dynamic>, 'baseUpdatedAt': base};
+      final base = (queued[field] as Map)['baseUpdatedAt'];
+      queued[field] = {...op[field] as Map<String, dynamic>, 'baseUpdatedAt': base};
     }
   }
 
@@ -345,13 +419,22 @@ class TaskStore extends ChangeNotifier {
       final job = jobs[i];
       final result = results[i];
       final id = _opId(job.op);
-      if (result['ok'] == true) {
+      if (result['ok'] == true && _isNote(job.op)) {
+        final saved = result['note'];
+        if (saved != null && notes.any((n) => n.id == id)) {
+          _replaceNote(Note.fromJson(saved as Map<String, dynamic>));
+        }
+      } else if (result['ok'] == true) {
         final saved = result['task'];
         if (saved != null && tasks.any((t) => t.id == id)) {
           _replace(Task.fromJson(saved as Map<String, dynamic>));
         }
         final next = result['next'];
         if (next != null) tasks = [...tasks, Task.fromJson(next as Map<String, dynamic>)];
+      } else if (result['conflict'] != null && _isNote(job.op)) {
+        final theirs = Note.fromJson(result['conflict'] as Map<String, dynamic>);
+        _replaceNote(theirs);
+        onNoteConflict(Note.fromJson(job.op['note'] as Map<String, dynamic>), theirs);
       } else if (result['conflict'] != null) {
         final theirs = Task.fromJson(result['conflict'] as Map<String, dynamic>);
         _replace(theirs);
@@ -365,14 +448,22 @@ class TaskStore extends ChangeNotifier {
 
   void _rollback(_Job job) {
     final previous = job.previous;
-    if (previous != null) {
+    if (previous is Task) {
       if (tasks.any((t) => t.id == previous.id)) {
         _replace(previous);
       } else {
         tasks = [...tasks, previous];
       }
+    } else if (previous is Note) {
+      if (notes.any((n) => n.id == previous.id)) {
+        _replaceNote(previous);
+      } else {
+        notes = [...notes, previous];
+      }
     } else if (job.op['action'] == 'create') {
       _remove(_opId(job.op));
+    } else if (job.op['action'] == 'createNote') {
+      _removeNote(_opId(job.op));
     }
   }
 
@@ -381,10 +472,16 @@ class TaskStore extends ChangeNotifier {
 
   void _remove(String id) => tasks = tasks.where((t) => t.id != id).toList();
 
+  void _replaceNote(Note note) =>
+      notes = [for (final n in notes) n.id == note.id ? note : n];
+
+  void _removeNote(String id) => notes = notes.where((n) => n.id != id).toList();
+
   Future<void> _saveQueue() => _prefs.setString(_queueKey, jsonEncode(queue));
 
   void _saveCache() {
     _prefs.setString(_cacheKey, jsonEncode(tasks.map((t) => t.toJson()).toList()));
+    _prefs.setString(_notesCacheKey, jsonEncode(notes.map((n) => n.toJson()).toList()));
     _updateWidget();
     if (remindersOn) _reminders.schedule(tasks).catchError((_) {});
   }
