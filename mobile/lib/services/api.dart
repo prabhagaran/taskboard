@@ -20,9 +20,10 @@ class NetworkException extends ApiException {
 }
 
 /// This app's Supabase project. The publishable key is meant to be public:
-/// row-level security keeps each account's tasks private.
-const supabaseUrl = 'https://pymvievtqpkbnblmkwlz.supabase.co';
-const supabaseKey = 'sb_publishable_6YwB2Uok9Oyb2xwZtieevw_mIOM1HqP';
+/// row-level security keeps each account's tasks private. For a local stack
+/// (`supabase start`), build with `--dart-define=SUPABASE_URL=... --dart-define=SUPABASE_KEY=...`.
+const supabaseUrl = String.fromEnvironment('SUPABASE_URL', defaultValue: 'https://pymvievtqpkbnblmkwlz.supabase.co');
+const supabaseKey = String.fromEnvironment('SUPABASE_KEY', defaultValue: 'sb_publishable_6YwB2Uok9Oyb2xwZtieevw_mIOM1HqP');
 
 /// A signed-in Supabase session. Kept in encrypted storage.
 class SupabaseSession {

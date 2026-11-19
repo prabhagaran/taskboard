@@ -11,8 +11,18 @@ import android.widget.RemoteViewsService
 import es.antonborri.home_widget.HomeWidgetLaunchIntent
 import es.antonborri.home_widget.HomeWidgetPlugin
 import es.antonborri.home_widget.HomeWidgetProvider
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
-/** Home-screen widget with a scrolling list of open tasks. The app supplies the text on each sync. */
+/** True when the saved picks are from today. My day picks lapse at midnight. */
+private fun isToday(data: SharedPreferences): Boolean =
+    data.getString("day", null) == SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+
+/**
+ * Home-screen widget with a scrolling list of today's My day picks. The app
+ * supplies the text on each sync; the periodic update clears it after midnight.
+ */
 class TaskBoardWidget : HomeWidgetProvider() {
     override fun onUpdate(
         context: Context,
@@ -23,12 +33,17 @@ class TaskBoardWidget : HomeWidgetProvider() {
         val openApp = HomeWidgetLaunchIntent.getActivity(context, MainActivity::class.java)
         appWidgetIds.forEach { id ->
             val views = RemoteViews(context.packageName, R.layout.taskboard_widget).apply {
-                setTextViewText(R.id.widget_title, widgetData.getString("title", "To Do"))
+                val fresh = isToday(widgetData)
+                setTextViewText(R.id.widget_title, if (fresh) widgetData.getString("title", "My day") else "My day")
                 setRemoteAdapter(R.id.widget_list, Intent(context, TaskBoardWidgetService::class.java))
                 setEmptyView(R.id.widget_list, R.id.widget_empty)
                 setTextViewText(
                     R.id.widget_empty,
-                    if (widgetData.contains("lines")) "No open tasks" else "Open TaskBoard to sync",
+                    when {
+                        !widgetData.contains("lines") -> "Open TaskBoard to sync"
+                        !fresh -> "Tap to plan today."
+                        else -> widgetData.getString("empty", "Nothing picked for today.")
+                    },
                 )
                 setOnClickPendingIntent(R.id.widget_root, openApp)
                 // List rows swallow taps, so they need a template of their own.
@@ -58,7 +73,8 @@ class TaskBoardWidgetService : RemoteViewsService() {
         private var lines = emptyList<String>()
 
         override fun onDataSetChanged() {
-            lines = HomeWidgetPlugin.getData(context).getString("lines", "")
+            val data = HomeWidgetPlugin.getData(context)
+            lines = if (!isToday(data)) emptyList() else data.getString("lines", "")
                 .orEmpty()
                 .split('\n')
                 .filter { it.isNotEmpty() }

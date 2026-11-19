@@ -511,15 +511,22 @@ class TaskStore extends ChangeNotifier {
     if (remindersOn) _reminders.schedule(tasks).catchError((_) {});
   }
 
-  /// Sends every open task to the home-screen widget, one title per line.
+  /// Sends today's My day picks to the home-screen widget, one title per line.
+  /// Done picks stay out of the list but count toward the progress in the title.
   Future<void> _updateWidget() async {
-    // My day picks come first.
-    final open = tasks.where((t) => t.isOpen).toList()
-      ..sort((a, b) => a.isFocus == b.isFocus ? compareTasks(a, b) : (a.isFocus ? -1 : 1));
+    final picks = tasks.where((t) => t.isFocus).toList();
+    final open = picks.where((t) => t.isOpen).toList()..sort(compareTasks);
+    final done = picks.length - open.length;
     final lines = open.map((t) => '• ${t.title.replaceAll(RegExp(r'\s+'), ' ')}');
     try {
-      await HomeWidget.saveWidgetData<String>('title', 'To Do · ${open.length}');
+      await HomeWidget.saveWidgetData<String>('title', picks.isEmpty ? 'My day' : 'My day · $done of ${picks.length} done');
       await HomeWidget.saveWidgetData<String>('lines', lines.join('\n'));
+      await HomeWidget.saveWidgetData<String>(
+        'empty',
+        picks.isEmpty ? 'Nothing picked for today. Tap to plan your day.' : 'All done for today.',
+      );
+      // The widget hides picks saved on an earlier day, since they've lapsed.
+      await HomeWidget.saveWidgetData<String>('day', todayKey());
       await HomeWidget.updateWidget(androidName: _widgetProvider);
     } catch (_) {
       // The widget is optional; a failure here must never affect saving.

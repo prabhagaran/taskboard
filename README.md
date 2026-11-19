@@ -56,7 +56,7 @@ On the website, open **Connection settings** and sign in with the email and pass
 
 ## Android app
 
-[`mobile/`](mobile/) is a Flutter app that uses the same Supabase account. Its Today screen leads with your My day picks (tap **Plan my day** to choose them) and folds everything else due away. It has Today, Tasks, Notes, Calendar, and Dashboard screens, a scrollable home-screen widget listing all open tasks, swipe to complete or delete, hold and drag to reorder, and a tablet layout. Offline, it shows your last synced tasks and queues your changes until you reconnect. Turn on **Due date reminders** in Settings for a notification at 9:00 on days with tasks due.
+[`mobile/`](mobile/) is a Flutter app that uses the same Supabase account. Its Today screen leads with your My day picks (tap **Plan my day** to choose them) and folds everything else due away. It has Today, Tasks, Notes, Calendar, and Dashboard screens, a home-screen widget showing today's My day tasks and progress, swipe to complete or delete, hold and drag to reorder, and a tablet layout. Offline, it shows your last synced tasks and queues your changes until you reconnect. Turn on **Due date reminders** in Settings for a notification at 9:00 on days with tasks due.
 
 ```bash
 cd mobile
