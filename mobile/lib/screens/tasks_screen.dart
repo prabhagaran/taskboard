@@ -197,7 +197,7 @@ class _TasksScreenState extends State<TasksScreen> {
           EmptyState(
             icon: Icons.inbox_outlined,
             title: 'No tasks',
-            message: store.syncing ? 'Loading from Google Sheets…' : 'Nothing in ${status.label} right now.',
+            message: store.syncing ? 'Loading your tasks…' : 'Nothing in ${status.label} right now.',
           ),
         ],
       );

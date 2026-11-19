@@ -10,11 +10,12 @@ import '../widgets/common.dart';
 import 'note_editor.dart';
 
 class TaskEditor extends StatefulWidget {
-  const TaskEditor({super.key, this.task, this.initialDueDate = ''});
+  const TaskEditor({super.key, this.task, this.initialDueDate = '', this.initialFocus = false});
 
   /// The task being edited, or null when creating one.
   final Task? task;
   final String initialDueDate;
+  final bool initialFocus;
 
   @override
   State<TaskEditor> createState() => _TaskEditorState();
@@ -32,6 +33,7 @@ class _TaskEditorState extends State<TaskEditor> {
   late TaskStatus _status;
   late TaskPriority _priority;
   late String _dueDate;
+  late bool _focus;
   bool _titleMissing = false;
 
   bool get _isNew => widget.task == null;
@@ -50,6 +52,7 @@ class _TaskEditorState extends State<TaskEditor> {
     _status = task?.status ?? TaskStatus.todo;
     _priority = task?.priority ?? TaskPriority.medium;
     _dueDate = task?.dueDate ?? widget.initialDueDate;
+    _focus = task?.isFocus ?? widget.initialFocus;
   }
 
   @override
@@ -101,6 +104,8 @@ class _TaskEditorState extends State<TaskEditor> {
       links: cleanLinks(_links.text),
       recurrence: _recurrence,
       checklist: formatChecklist(_steps),
+      // Keep an unchanged pick as it was, so saving doesn't count as an edit.
+      focusDate: _focus ? todayKey() : (base.isFocus ? '' : base.focusDate),
     );
     if (_isNew) {
       store.add(task);
@@ -304,7 +309,16 @@ class _TaskEditorState extends State<TaskEditor> {
               ],
               onChanged: (value) => setState(() => _recurrence = value ?? ''),
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 8),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              secondary: const Icon(Icons.wb_sunny_outlined),
+              title: const Text('My day'),
+              subtitle: const Text('Working on it today'),
+              value: _focus,
+              onChanged: (value) => setState(() => _focus = value),
+            ),
+            const SizedBox(height: 12),
             Text(
               _steps.isEmpty
                   ? 'Checklist'

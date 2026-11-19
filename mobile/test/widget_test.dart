@@ -117,6 +117,23 @@ void main() {
     });
   });
 
+  group('My day', () {
+    test('counts only the pick made today, so older picks lapse', () {
+      expect(Task(id: '1', title: 'a', focusDate: todayKey()).isFocus, isTrue);
+      expect(Task(id: '1', title: 'a', focusDate: dayKey(-1)).isFocus, isFalse);
+      expect(const Task(id: '1', title: 'a').isFocus, isFalse);
+    });
+
+    test('keeps the pick through JSON and drops values typed by hand', () {
+      final task = Task.fromJson(Task(id: '1', title: 'a', focusDate: todayKey()).toJson());
+      expect(task.isFocus, isTrue);
+      expect(Task.fromJson({'id': '1', 'title': 'a', 'focusDate': 'today'}).focusDate, '');
+      expect(Task.fromJson({'id': '1', 'title': 'a'}).focusDate, '', reason: 'older sheets have no column');
+      expect(task.copyWith(focusDate: '').isFocus, isFalse);
+      expect(task.copyWith(title: 'b').isFocus, isTrue);
+    });
+  });
+
   group('SetupLink', () {
     const id = 'AKfycbExampleScriptId_123-abcdefgh';
     const token = 'abcdef0123456789abcdef0123456789';
@@ -161,12 +178,14 @@ void main() {
       expect(calls, ['POST', 'GET']);
       expect(data.tasks.single.status, TaskStatus.done);
       expect(data.notes, isEmpty, reason: 'a script from before notes sends none');
+      expect(data.version, 0, reason: 'old scripts send no version, so they read as out of date');
     });
 
     test('reads notes with their linked tasks', () async {
       final client = MockClient((_) async => http.Response(
             jsonEncode({
               'ok': true,
+              'version': 3,
               'tasks': [],
               'notes': [
                 {'id': 'n1', 'title': 'Plan', 'body': 'Steps', 'taskIds': 't1, t2'},
@@ -176,6 +195,7 @@ void main() {
           ));
       final data = await TaskApi(url: 'https://script.google.com/x/exec', token: 't', client: client).list();
       expect(data.notes.single.taskIds, ['t1', 't2']);
+      expect(data.version, 3);
     });
 
     test('reports the server error message', () async {
@@ -220,4 +240,102 @@ void main() {
       await expectLater(api.list(), throwsA(isA<ApiException>()));
     });
   });
+  group('SupabaseApi', () {
+    SupabaseSession session({int expiresIn = 3600}) => SupabaseSession(
+          accessToken: 'old-access',
+          refreshToken: 'old-refresh',
+          expiresAt: DateTime.now().millisecondsSinceEpoch ~/ 1000 + expiresIn,
+          email: 'me@example.com',
+        );
+
+    test('signs in with email and password', () async {
+      late http.Request seen;
+      final client = MockClient((req) async {
+        seen = req;
+        return http.Response(
+            jsonEncode({
+              'access_token': 'a',
+              'refresh_token': 'r',
+              'expires_in': 3600,
+              'user': {'email': 'me@example.com'},
+            }),
+            200);
+      });
+      final s = await SupabaseApi.signIn('me@example.com', 'pw', client: client);
+      expect(seen.url.path, '/auth/v1/token');
+      expect(seen.url.queryParameters['grant_type'], 'password');
+      expect(seen.headers['apikey'], supabaseKey);
+      expect(jsonDecode(seen.body), {'email': 'me@example.com', 'password': 'pw'});
+      expect(s.accessToken, 'a');
+      expect(s.email, 'me@example.com');
+      expect(s.expiresSoon, isFalse);
+    });
+
+    test('reports a wrong password', () async {
+      final client = MockClient((_) async =>
+          http.Response(jsonEncode({'error': 'invalid_grant', 'error_description': 'Invalid login credentials'}), 400));
+      expect(
+        () => SupabaseApi.signIn('me@example.com', 'bad', client: client),
+        throwsA(isA<ApiException>().having((e) => e.message, 'message', 'Invalid login credentials')),
+      );
+    });
+
+    test('calls the database functions with the session', () async {
+      final calls = <http.Request>[];
+      final client = MockClient((req) async {
+        calls.add(req);
+        if (req.url.path.endsWith('list_all')) {
+          return http.Response(jsonEncode({'ok': true, 'version': 4, 'tasks': [], 'notes': []}), 200);
+        }
+        if (req.url.path.endsWith('apply_ops')) {
+          return http.Response(jsonEncode({'ok': true, 'results': [{'ok': true}]}), 200);
+        }
+        return http.Response(jsonEncode({'ok': true, 'entries': []}), 200);
+      });
+      final api = SupabaseApi(session: session(), onSession: (_) async {}, client: client);
+      expect((await api.list()).version, 4);
+      await api.batch([{'action': 'delete', 'id': 't1'}]);
+      await api.history('t1');
+      expect(calls.map((c) => c.url.path), ['/rest/v1/rpc/list_all', '/rest/v1/rpc/apply_ops', '/rest/v1/rpc/task_history']);
+      expect(calls.first.headers['Authorization'], 'Bearer old-access');
+      expect(jsonDecode(calls[1].body)['today'], todayKey());
+      expect(jsonDecode(calls[2].body), {'p_task_id': 't1'});
+    });
+
+    test('refreshes an expired session once and saves it', () async {
+      SupabaseSession? saved;
+      final paths = <String>[];
+      final client = MockClient((req) async {
+        paths.add(req.url.path);
+        if (req.url.path == '/auth/v1/token') {
+          return http.Response(jsonEncode({'access_token': 'new-access', 'refresh_token': 'new-refresh', 'expires_in': 3600}), 200);
+        }
+        if (req.headers['Authorization'] == 'Bearer old-access') return http.Response('{"message":"JWT expired"}', 401);
+        return http.Response(jsonEncode({'ok': true, 'version': 4, 'tasks': [], 'notes': []}), 200);
+      });
+      final api = SupabaseApi(session: session(), onSession: (s) async => saved = s, client: client);
+      await api.list();
+      expect(paths, ['/rest/v1/rpc/list_all', '/auth/v1/token', '/rest/v1/rpc/list_all']);
+      expect(saved?.refreshToken, 'new-refresh');
+      expect(saved?.email, 'me@example.com', reason: 'refresh responses may omit the email');
+    });
+
+    test('asks to sign in again when the refresh is refused', () async {
+      final client = MockClient((req) async => req.url.path == '/auth/v1/token'
+          ? http.Response('{"error_description":"Invalid Refresh Token"}', 400)
+          : http.Response('{}', 200));
+      final api = SupabaseApi(session: session(expiresIn: 0), onSession: (_) async {}, client: client);
+      expect(api.list(), throwsA(isA<ApiException>().having((e) => e.message, 'message', contains('Sign in again'))));
+    });
+
+    test('queues writes when Supabase is unreachable', () async {
+      final client = MockClient((_) async => throw const SocketExceptionStub());
+      final api = SupabaseApi(session: session(), onSession: (_) async {}, client: client);
+      expect(api.batch([]), throwsA(isA<NetworkException>()));
+    });
+  });
+}
+
+class SocketExceptionStub implements Exception {
+  const SocketExceptionStub();
 }

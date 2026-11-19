@@ -1,8 +1,9 @@
 # TaskBoard
 
-A lightweight personal task manager. The frontend is a static site (hosted free on GitHub Pages); the backend is a Google Sheet, accessed through a small Google Apps Script web app.
+A lightweight personal task manager. The frontend is a static site (hosted free on GitHub Pages). Tasks are stored in [Supabase](https://supabase.com), with a Google Sheet and a small Apps Script web app as the older alternative.
 
-- **Workspace layout:** sidebar with smart lists (Today, Next 7 days, Overdue, Completed) and projects, with live counts
+- **My day:** pick the tasks you'll work on today from everything open. Due dates stay the same, and the list starts empty each morning
+- **Workspace layout:** sidebar with smart lists (My day, Today, Next 7 days, Overdue, Completed) and projects, with live counts
 - **Dashboard:** KPI tiles, completions per day, open work by priority, workload by project, upcoming deadlines, recent activity
 - **Board:** drag and drop between To Do and Done, plus inline quick-add in each column
 - **Table:** sortable columns, multi-select, and bulk actions (mark done, set status or priority, delete)
@@ -23,10 +24,22 @@ A lightweight personal task manager. The frontend is a static site (hosted free 
 - Shortcuts: `Ctrl K` palette, `N` new task, `/` filter, `Ctrl Enter` save, `Esc` close
 
 ```
-GitHub Pages (index.html, app.js)  ──POST JSON──▶  Apps Script web app  ──▶  Google Sheet "Tasks"
+GitHub Pages (index.html, app.js)  ──▶  Supabase (Postgres + sign-in)
+                                   └─▶  or: Apps Script web app ──▶ Google Sheet
 ```
 
-## 1. Set up the Google Sheet backend
+## Supabase (recommended)
+
+1. Create a Supabase project and run [`supabase/schema.sql`](supabase/schema.sql) in its **SQL Editor**. This creates the tables, the rules that keep each account's rows private, and the functions the apps call.
+2. **Authentication → Users → Add user → Create new user**: enter your email and a password, and tick **Auto Confirm User**.
+3. **Authentication → Sign In / Providers**: turn off **Allow new users to sign up**. The site's publishable key is public, so otherwise anyone could create an account in your project (they still couldn't see your tasks).
+4. Put your project's URL and publishable key (**Project Settings → API Keys**) in `SUPABASE_DEFAULT` in `app.js` and in `supabaseUrl`/`supabaseKey` in `mobile/lib/services/api.dart`. Both are safe to publish; never use the `service_role` key.
+5. On the website, open **Connection settings**, choose **Supabase** and sign in. If you used a Google Sheet before, click **Import from Google Sheet** to copy its tasks and notes. Running it again skips anything already copied. Task history isn't copied.
+6. In the Android app, sign in under **Settings**.
+
+Not yet moved over from Apps Script: the daily reminder email, Google Calendar sync and nightly backups. Phone reminders still work. Supabase's free plan pauses a project after about a week without use; restore it from the dashboard.
+
+## 1. Set up the Google Sheet backend (alternative)
 
 1. Create a new Google Sheet (any name, e.g. *TaskBoard*).
 2. Open **Extensions → Apps Script**.
@@ -74,7 +87,7 @@ To add another device, open **Connection settings** on one that's connected and 
 
 ## Android app
 
-[`mobile/`](mobile/) is a Flutter app that uses the same Google Sheet and web app. It has Today, Tasks, Notes, Calendar, and Dashboard screens, a scrollable home-screen widget listing all open tasks, swipe to complete or delete, hold and drag to reorder, and a tablet layout. Offline, it shows your last synced tasks and queues your changes until you reconnect. Turn on **Due date reminders** in Settings for a notification at 9:00 on days with tasks due.
+[`mobile/`](mobile/) is a Flutter app that uses the same Google Sheet and web app. Its Today screen leads with your My day picks (tap **Plan my day** to choose them) and folds everything else due away. It has Today, Tasks, Notes, Calendar, and Dashboard screens, a scrollable home-screen widget listing all open tasks, swipe to complete or delete, hold and drag to reorder, and a tablet layout. Offline, it shows your last synced tasks and queues your changes until you reconnect. Turn on **Due date reminders** in Settings for a notification at 9:00 on days with tasks due.
 
 ```bash
 cd mobile
@@ -88,8 +101,8 @@ Copy the APK to your phone, open it, and allow installs from that source. On fir
 
 ## Sheet format
 
-| id | title | description | status | priority | project | dueDate | createdAt | updatedAt | tags | links | sortOrder | completedAt | recurrence | checklist |
-|----|-------|-------------|--------|----------|---------|---------|-----------|-----------|------|-------|-----------|-------------|------------|-----------|
+| id | title | description | status | priority | project | dueDate | createdAt | updatedAt | tags | links | sortOrder | completedAt | recurrence | checklist | focusDate |
+|----|-------|-------------|--------|----------|---------|---------|-----------|-----------|------|-------|-----------|-------------|------------|-----------|-----------|
 
 Older sheets gain any missing columns automatically the first time a new script runs.
 
@@ -102,6 +115,7 @@ Older sheets gain any missing columns automatically the first time a new script 
 - `completedAt`: set automatically when a task is finished
 - `recurrence`: blank, `daily`, `weekly`, `monthly` or `yearly`
 - `checklist`: one step per line, as `[ ] step` or `[x] step`
+- `focusDate`: the day the task was picked for My day (`YYYY-MM-DD`); picks from earlier days are ignored
 
 Notes live in a separate `Notes` sheet, created the first time the app loads:
 
@@ -133,5 +147,8 @@ python -m http.server 8080
 |---------|-----|
 | "Invalid API token" | Re-copy the token from `setup()`'s log (run `setup()` again; it prints the existing token). |
 | "Unexpected response" / HTML instead of JSON | The deployment's access isn't set to **Anyone**, or the URL isn't the `/exec` one. |
+| "Your sign-in has expired" | Open **Connection settings** (website) or **Settings** (app) and sign in again. |
+| "Invalid login credentials" | Check the email and password of the user you added in Supabase. |
+| "Apps Script is out of date" | Paste the latest `Code.gs` and publish a **new version** (see above). |
 | Changes to `Code.gs` not taking effect | Publish a **new version** of the existing deployment (see above). |
 | "Backend not configured" | Run `setup()` once in the Apps Script editor. |

@@ -24,18 +24,21 @@ const BACKUPS_KEPT = 14;
 const REMINDER_HOUR = 8;
 const BACKUP_HOUR = 2;
 // New columns go at the end so existing sheets can be upgraded in place.
-const HEADERS = ['id', 'title', 'description', 'status', 'priority', 'project', 'dueDate', 'createdAt', 'updatedAt', 'tags', 'links', 'sortOrder', 'completedAt', 'recurrence', 'checklist'];
+const HEADERS = ['id', 'title', 'description', 'status', 'priority', 'project', 'dueDate', 'createdAt', 'updatedAt', 'tags', 'links', 'sortOrder', 'completedAt', 'recurrence', 'checklist', 'focusDate'];
 const HISTORY_HEADERS = ['at', 'taskId', 'title', 'action', 'details'];
 const DEVICE_HEADERS = ['name', 'token'];
 // taskIds is a comma-separated list of the tasks a note is linked to.
 const NOTE_HEADERS = ['id', 'title', 'body', 'taskIds', 'createdAt', 'updatedAt'];
 const NOTE_BODY_MAX = 40000; // A Sheets cell holds at most 50,000 characters.
-const EDITABLE = ['title', 'description', 'status', 'priority', 'project', 'dueDate', 'tags', 'links', 'sortOrder', 'recurrence', 'checklist'];
+// focusDate is the day a task was picked for My day; it lapses on its own after that day.
+const EDITABLE = ['title', 'description', 'status', 'priority', 'project', 'dueDate', 'tags', 'links', 'sortOrder', 'recurrence', 'checklist', 'focusDate'];
 const TRACKED = ['title', 'description', 'status', 'priority', 'project', 'dueDate', 'tags', 'links', 'recurrence', 'checklist'];
 const STATUSES = ['todo', 'inprogress', 'done'];
 const PRIORITIES = ['low', 'medium', 'high'];
 const RECURRENCES = ['daily', 'weekly', 'monthly', 'yearly'];
 const HISTORY_READ_LIMIT = 5000;
+// Raised when clients need something new from this script, so they can say it is out of date.
+const API_VERSION = 3;
 
 /** Run once from the Apps Script editor: creates the sheet and the API token. */
 function setup() {
@@ -219,7 +222,7 @@ function failure_(err) {
 }
 
 function route_(req) {
-  if (req.action === 'list') return { tasks: readTasks_(getSheet_()), notes: readNotes_(getNotesSheet_()) };
+  if (req.action === 'list') return { version: API_VERSION, tasks: readTasks_(getSheet_()), notes: readNotes_(getNotesSheet_()) };
   if (req.action === 'history') return { entries: readHistory_(req.id) };
 
   // Serialize writes so concurrent requests can't clobber row positions.
@@ -359,7 +362,7 @@ function readTasks_(sheet) {
 }
 
 function createTask_(sheet, input) {
-  const task = clean_(input, { description: '', status: 'todo', priority: 'medium', project: '', dueDate: '', tags: '', links: '', sortOrder: '', recurrence: '', checklist: '' });
+  const task = clean_(input, { description: '', status: 'todo', priority: 'medium', project: '', dueDate: '', tags: '', links: '', sortOrder: '', recurrence: '', checklist: '', focusDate: '' });
   const id = String(input.id || '');
   const validId = /^[\w-]{1,64}$/.test(id);
   // A retried create (say, after a lost response) must not add a second copy.
@@ -386,6 +389,7 @@ function nextOccurrence_(task) {
     dueDate: due,
     sortOrder: '',
     completedAt: '',
+    focusDate: '',
     checklist: task.checklist.replace(/^\[x\]/gim, '[ ]'),
     createdAt: now,
     updatedAt: now,
@@ -536,6 +540,7 @@ function clean_(input, base) {
   if (task.dueDate && !/^\d{4}-\d{2}-\d{2}$/.test(task.dueDate)) throw new Error('Due date must be YYYY-MM-DD.');
   if (task.sortOrder && !/^-?\d+(\.\d+)?$/.test(task.sortOrder)) task.sortOrder = '';
   if (RECURRENCES.indexOf(task.recurrence) < 0) task.recurrence = '';
+  if (task.focusDate && !/^\d{4}-\d{2}-\d{2}$/.test(task.focusDate)) task.focusDate = '';
   task.links = (task.links || '')
     .split('\n')
     .map(function (link) { return link.trim(); })

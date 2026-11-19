@@ -18,6 +18,8 @@ const _cacheKey = 'tasks';
 const _notesCacheKey = 'notes';
 const _themeKey = 'theme';
 const _tokenKey = 'token';
+const _backendKey = 'backend';
+const _sessionKey = 'session';
 const _filtersKey = 'savedFilters';
 const _queueKey = 'queue';
 const _remindersKey = 'reminders';
@@ -60,6 +62,12 @@ class TaskStore extends ChangeNotifier {
   bool syncing = false;
   bool remindersOn = false;
   String? syncError;
+
+  /// Set when Apps Script is older than this app needs, so some changes can't be saved.
+  bool scriptOutdated = false;
+
+  /// The Apps Script API_VERSION this app needs.
+  static const scriptVersion = 3;
   List<Task> tasks = [];
   List<Note> notes = [];
   List<SavedFilter> savedFilters = [];
@@ -68,6 +76,17 @@ class TaskStore extends ChangeNotifier {
   String url = '';
 
   bool get isConnected => _api != null;
+
+  /// Signed in to Supabase, rather than connected to a Google Sheet.
+  bool get isSupabase => _api is SupabaseApi;
+
+  /// The Supabase account's email, or empty for a Google Sheet.
+  String get accountEmail => switch (_api) {
+    final SupabaseApi api => api.email,
+    _ => '',
+  };
+
+  String get backendName => isSupabase ? 'Supabase' : 'Google Sheets';
 
   List<String> get projects {
     final names = tasks.map((t) => t.project).where((p) => p.isNotEmpty).toSet().toList();
@@ -82,13 +101,11 @@ class TaskStore extends ChangeNotifier {
   Future<List<HistoryEntry>> history(String id) => _api!.history(id);
 
   /// Notes linked to the task with [taskId], most recently edited first.
-  List<Note> notesFor(String taskId) => notes.where((n) => n.taskIds.contains(taskId)).toList()
-    ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+  List<Note> notesFor(String taskId) =>
+      notes.where((n) => n.taskIds.contains(taskId)).toList()..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
 
   /// Linked tasks that still exist; links to deleted tasks stay so an undo restores them.
-  List<Task> tasksFor(Note note) => [
-        for (final id in note.taskIds) ...tasks.where((t) => t.id == id),
-      ];
+  List<Task> tasksFor(Note note) => [for (final id in note.taskIds) ...tasks.where((t) => t.id == id)];
 
   Future<void> saveFilter(SavedFilter filter) async {
     savedFilters = [...savedFilters.where((f) => f.name != filter.name), filter];
@@ -102,18 +119,14 @@ class TaskStore extends ChangeNotifier {
     await _saveFilters();
   }
 
-  Future<void> _saveFilters() => _prefs.setString(
-        _filtersKey,
-        jsonEncode(savedFilters.map((f) => f.toJson()).toList()),
-      );
+  Future<void> _saveFilters() =>
+      _prefs.setString(_filtersKey, jsonEncode(savedFilters.map((f) => f.toJson()).toList()));
 
   Future<void> init() async {
     _prefs = await SharedPreferences.getInstance();
     final filters = _prefs.getString(_filtersKey);
     if (filters != null) {
-      savedFilters = (jsonDecode(filters) as List)
-          .map((f) => SavedFilter.fromJson(f as Map<String, dynamic>))
-          .toList();
+      savedFilters = (jsonDecode(filters) as List).map((f) => SavedFilter.fromJson(f as Map<String, dynamic>)).toList();
     }
     final waiting = _prefs.getString(_queueKey);
     if (waiting != null) {
@@ -126,20 +139,21 @@ class TaskStore extends ChangeNotifier {
     );
     url = _prefs.getString(_urlKey) ?? '';
     final token = await _secure.read(key: _tokenKey);
-    if (url.isNotEmpty && token != null) {
+    final session = await _secure.read(key: _sessionKey);
+    if (_prefs.getString(_backendKey) == 'supabase' && session != null) {
+      _api = _supabaseApi(SupabaseSession.fromJson(jsonDecode(session) as Map<String, dynamic>));
+    } else if (url.isNotEmpty && token != null) {
       _api = TaskApi(url: url, token: token);
+    }
+    if (_api != null) {
       // Show the last synced tasks at once; Apps Script can take seconds.
       final cached = _prefs.getString(_cacheKey);
       if (cached != null) {
-        tasks = (jsonDecode(cached) as List)
-            .map((t) => Task.fromJson(t as Map<String, dynamic>))
-            .toList();
+        tasks = (jsonDecode(cached) as List).map((t) => Task.fromJson(t as Map<String, dynamic>)).toList();
       }
       final cachedNotes = _prefs.getString(_notesCacheKey);
       if (cachedNotes != null) {
-        notes = (jsonDecode(cachedNotes) as List)
-            .map((n) => Note.fromJson(n as Map<String, dynamic>))
-            .toList();
+        notes = (jsonDecode(cachedNotes) as List).map((n) => Note.fromJson(n as Map<String, dynamic>)).toList();
       }
     }
     ready = true;
@@ -164,6 +178,7 @@ class TaskStore extends ChangeNotifier {
           final data = await api.list();
           tasks = data.tasks;
           notes = data.notes;
+          scriptOutdated = data.version < scriptVersion;
           _saveCache();
         }
         syncError = null;
@@ -179,9 +194,26 @@ class TaskStore extends ChangeNotifier {
   Future<int> testConnection(String url, String token) async =>
       (await TaskApi(url: url, token: token).list()).tasks.length;
 
+  SupabaseApi _supabaseApi(SupabaseSession session) => SupabaseApi(
+    session: session,
+    onSession: (next) => _secure.write(key: _sessionKey, value: jsonEncode(next.toJson())),
+  );
+
+  /// Signs in to Supabase and syncs from there. Throws [ApiException].
+  Future<void> signIn(String email, String password) async {
+    final session = await SupabaseApi.signIn(email, password);
+    await _secure.write(key: _sessionKey, value: jsonEncode(session.toJson()));
+    await _prefs.setString(_backendKey, 'supabase');
+    await _clearLocalData();
+    _api = _supabaseApi(session);
+    await refresh();
+  }
+
   Future<void> connect(String newUrl, String token) async {
     url = newUrl;
     await _prefs.setString(_urlKey, newUrl);
+    await _prefs.setString(_backendKey, 'sheets');
+    await _secure.delete(key: _sessionKey);
     await _secure.write(key: _tokenKey, value: token);
     await _clearLocalData();
     _api = TaskApi(url: newUrl, token: token);
@@ -189,8 +221,12 @@ class TaskStore extends ChangeNotifier {
   }
 
   Future<void> disconnect() async {
+    final api = _api;
+    if (api is SupabaseApi) await api.signOut();
     url = '';
     _api = null;
+    await _prefs.remove(_backendKey);
+    await _secure.delete(key: _sessionKey);
     syncError = null;
     await _prefs.remove(_urlKey);
     await _secure.delete(key: _tokenKey);
@@ -234,56 +270,71 @@ class TaskStore extends ChangeNotifier {
   Future<void> add(Task task) {
     tasks = [...tasks, task];
     notifyListeners();
-    return _send([_Job({'action': 'create', 'task': task.toJson()})]);
+    return _send([
+      _Job({'action': 'create', 'task': task.toJson()}),
+    ]);
   }
 
   Future<void> edit(Task task) {
     final previous = tasks.firstWhere((t) => t.id == task.id);
     _replace(task);
     notifyListeners();
-    return _send([_Job({'action': 'update', 'task': task.toJson()}, previous)]);
+    return _send([
+      _Job({'action': 'update', 'task': task.toJson()}, previous),
+    ]);
   }
 
   /// Saves [task] over a newer copy, after the user chose to keep their edit.
   Future<void> forceEdit(Task task) {
     _replace(task);
     notifyListeners();
-    return _send([_Job({'action': 'update', 'force': true, 'task': task.toJson()})]);
+    return _send([
+      _Job({'action': 'update', 'force': true, 'task': task.toJson()}),
+    ]);
   }
 
-  Future<void> setDone(Task task, bool done) =>
-      edit(task.copyWith(status: done ? TaskStatus.done : TaskStatus.todo));
+  Future<void> setDone(Task task, bool done) => edit(task.copyWith(status: done ? TaskStatus.done : TaskStatus.todo));
 
   Future<void> remove(Task task) {
     _remove(task.id);
     notifyListeners();
-    return _send([_Job({'action': 'delete', 'id': task.id}, task)]);
+    return _send([
+      _Job({'action': 'delete', 'id': task.id}, task),
+    ]);
   }
 
   Future<void> addNote(Note note) {
     notes = [...notes, note];
     notifyListeners();
-    return _send([_Job({'action': 'createNote', 'note': note.toJson()})]);
+    return _send([
+      _Job({'action': 'createNote', 'note': note.toJson()}),
+    ]);
   }
 
   Future<void> editNote(Note note) {
     final previous = notes.firstWhere((n) => n.id == note.id);
     _replaceNote(note);
     notifyListeners();
-    return _send([_Job({'action': 'updateNote', 'note': note.toJson()}, previous)]);
+    return _send([
+      _Job({'action': 'updateNote', 'note': note.toJson()}, previous),
+    ]);
   }
 
   /// Saves [note] over a newer copy, after the user chose to keep their edit.
   Future<void> forceEditNote(Note note) {
     _replaceNote(note);
     notifyListeners();
-    return _send([_Job({'action': 'updateNote', 'force': true, 'note': note.toJson()})]);
+    return _send([
+      _Job({'action': 'updateNote', 'force': true, 'note': note.toJson()}),
+    ]);
   }
 
   Future<void> removeNote(Note note) {
     _removeNote(note.id);
     notifyListeners();
-    return _send([_Job({'action': 'deleteNote', 'id': note.id}, note)]);
+    return _send([
+      _Job({'action': 'deleteNote', 'id': note.id}, note),
+    ]);
   }
 
   /// Links or unlinks a task, saving the note at once.
@@ -291,6 +342,20 @@ class TaskStore extends ChangeNotifier {
     final ids = note.taskIds.where((id) => id != taskId).toList();
     if (linked) ids.add(taskId);
     return editNote(note.copyWith(taskIds: ids));
+  }
+
+  /// Makes [ids] the open tasks picked for My day, in one write.
+  Future<void> planDay(Set<String> ids) async {
+    final today = todayKey();
+    final jobs = <_Job>[];
+    for (final task in tasks.where((t) => t.isOpen && ids.contains(t.id) != t.isFocus).toList()) {
+      final picked = task.copyWith(focusDate: ids.contains(task.id) ? today : '');
+      jobs.add(_Job({'action': 'update', 'task': picked.toJson()}, task));
+      _replace(picked);
+    }
+    if (jobs.isEmpty) return;
+    notifyListeners();
+    await _send(jobs);
   }
 
   /// Moves a task within [column], which must be sorted by [compareManual].
@@ -467,13 +532,11 @@ class TaskStore extends ChangeNotifier {
     }
   }
 
-  void _replace(Task task) =>
-      tasks = [for (final t in tasks) t.id == task.id ? task : t];
+  void _replace(Task task) => tasks = [for (final t in tasks) t.id == task.id ? task : t];
 
   void _remove(String id) => tasks = tasks.where((t) => t.id != id).toList();
 
-  void _replaceNote(Note note) =>
-      notes = [for (final n in notes) n.id == note.id ? note : n];
+  void _replaceNote(Note note) => notes = [for (final n in notes) n.id == note.id ? note : n];
 
   void _removeNote(String id) => notes = notes.where((n) => n.id != id).toList();
 
@@ -488,7 +551,9 @@ class TaskStore extends ChangeNotifier {
 
   /// Sends every open task to the home-screen widget, one title per line.
   Future<void> _updateWidget() async {
-    final open = tasks.where((t) => t.isOpen).toList()..sort(compareTasks);
+    // My day picks come first.
+    final open = tasks.where((t) => t.isOpen).toList()
+      ..sort((a, b) => a.isFocus == b.isFocus ? compareTasks(a, b) : (a.isFocus ? -1 : 1));
     final lines = open.map((t) => '• ${t.title.replaceAll(RegExp(r'\s+'), ' ')}');
     try {
       await HomeWidget.saveWidgetData<String>('title', 'To Do · ${open.length}');
@@ -502,9 +567,7 @@ class TaskStore extends ChangeNotifier {
 
 /// Gives the widget tree access to the store and rebuilds on changes.
 class StoreScope extends InheritedNotifier<TaskStore> {
-  const StoreScope({super.key, required TaskStore store, required super.child})
-      : super(notifier: store);
+  const StoreScope({super.key, required TaskStore store, required super.child}) : super(notifier: store);
 
-  static TaskStore of(BuildContext context) =>
-      context.dependOnInheritedWidgetOfExactType<StoreScope>()!.notifier!;
+  static TaskStore of(BuildContext context) => context.dependOnInheritedWidgetOfExactType<StoreScope>()!.notifier!;
 }

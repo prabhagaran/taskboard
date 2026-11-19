@@ -18,12 +18,23 @@ const LOCAL_TASKS_KEY = 'taskboard.localTasks';
 const CACHE_KEY = 'taskboard.cache';
 const QUEUE_KEY = 'taskboard.queue';
 const LOCAL_NOTES_KEY = 'taskboard.localNotes';
+// The Google Sheets connection used before switching, kept for the one-time import.
+const SHEETS_KEY = 'taskboard.sheetsConfig';
+// This site's Supabase project. The publishable key is meant to be public:
+// row-level security keeps each account's tasks private.
+const SUPABASE_DEFAULT = {
+  url: 'https://pymvievtqpkbnblmkwlz.supabase.co',
+  key: 'sb_publishable_6YwB2Uok9Oyb2xwZtieevw_mIOM1HqP',
+};
+// The Apps Script API_VERSION this page needs; older scripts drop notes and My day.
+const SCRIPT_VERSION = 3;
 const NOTES_CACHE_KEY = 'taskboard.notesCache';
 
 // Smart lists in the sidebar. `test` selects tasks; `badge` is the sidebar count.
 const SCOPES = [
   { id: 'dashboard', label: 'Dashboard', icon: 'dashboard' },
   { id: 'all', label: 'All tasks', icon: 'inbox', test: () => true, badge: isOpen },
+  { id: 'myday', label: 'My day', icon: 'sun', test: isFocus, badge: (t) => isFocus(t) && isOpen(t) },
   { id: 'today', label: 'Today', icon: 'today', test: (t) => isOpen(t) && t.dueDate && t.dueDate <= todayStr() },
   { id: 'upcoming', label: 'Next 7 days', icon: 'calendar', test: (t) => isOpen(t) && t.dueDate > todayStr() && t.dueDate <= addDays(7) },
   { id: 'overdue', label: 'Overdue', icon: 'alert', test: isOverdue, alert: true },
@@ -71,7 +82,9 @@ const state = {
 };
 if (state.prefs.view === 'list') state.prefs.view = 'table';
 
-const isRemote = () => Boolean(state.config.url && state.config.token);
+const isSupabase = (config = state.config) => config.backend === 'supabase';
+const isRemote = () => (isSupabase() ? Boolean(state.config.session) : Boolean(state.config.url && state.config.token));
+const backendName = () => (isSupabase() ? 'Supabase' : 'Google Sheets');
 if (isRemote()) {
   // Show the last synced tasks at once; Apps Script can take seconds.
   state.tasks = storageGet(CACHE_KEY, []).map(normalize);
@@ -88,7 +101,86 @@ const savePrefs = () => storageSet(PREFS_KEY, state.prefs);
 /** The server could not be reached, so the request may succeed if retried. */
 class NetworkError extends Error {}
 
+/* ---------- Supabase ----------
+   The database functions answer like the Apps Script web app did, so the rest
+   of the app doesn't care which backend it talks to. */
+class AuthError extends Error {}
+
+async function authRequest(config, grant, body) {
+  let res;
+  try {
+    res = await fetch(`${config.url}/auth/v1/token?grant_type=${grant}`, {
+      method: 'POST',
+      headers: { apikey: config.key, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw new NetworkError('Could not reach Supabase. Check that you are online.');
+  }
+  const data = await res.json().catch(() => ({}));
+  if (res.status >= 500) throw new NetworkError(`Supabase responded ${res.status}`);
+  if (!res.ok) throw new AuthError(data.error_description || data.msg || data.message || 'Sign-in failed.');
+  return {
+    access_token: data.access_token,
+    refresh_token: data.refresh_token,
+    expires_at: data.expires_at || Math.floor(Date.now() / 1000) + (data.expires_in || 3600),
+    email: (data.user && data.user.email) || '',
+  };
+}
+
+let refreshing = null;
+
+/** A session good for at least another minute, refreshed when needed. */
+async function freshSession(config, force = false) {
+  const session = config.session;
+  if (!session) throw new Error('Signed out. Open Connection settings and sign in.');
+  if (!force && session.expires_at - 60 > Date.now() / 1000) return session;
+  refreshing =
+    refreshing ||
+    authRequest(config, 'refresh_token', { refresh_token: session.refresh_token })
+      .then((next) => {
+        config.session = next;
+        if (config === state.config) storageSet(CONFIG_KEY, config);
+        return next;
+      })
+      .catch((err) => {
+        if (err instanceof AuthError) throw new Error('Your sign-in has expired. Open Connection settings and sign in again.');
+        throw err;
+      })
+      .finally(() => {
+        refreshing = null;
+      });
+  return refreshing;
+}
+
+async function supabaseCall(fn, args, config = state.config) {
+  for (let attempt = 0; ; attempt++) {
+    const session = await freshSession(config, attempt > 0);
+    let res;
+    try {
+      res = await fetch(`${config.url}/rest/v1/rpc/${fn}`, {
+        method: 'POST',
+        headers: { apikey: config.key, Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(args),
+      });
+    } catch {
+      throw new NetworkError('Could not reach Supabase. Check that you are online.');
+    }
+    if (res.status === 401 && attempt === 0) continue; // Expired early; refresh once and retry.
+    if (res.status >= 500) throw new NetworkError(`Supabase responded ${res.status}`);
+    const data = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((data && (data.message || data.msg)) || `Supabase responded ${res.status}`);
+    return data;
+  }
+}
+
 async function remoteCall(action, payload = {}, config = state.config) {
+  if (isSupabase(config)) {
+    if (action === 'list') return supabaseCall('list_all', {}, config);
+    if (action === 'history') return supabaseCall('task_history', { p_task_id: payload.id }, config);
+    if (action === 'batch') return supabaseCall('apply_ops', { ops: payload.ops, today: todayStr() }, config);
+    throw new Error(`Unknown action: ${action}`);
+  }
   let res;
   try {
     res = await fetch(config.url, {
@@ -126,10 +218,10 @@ const localNotes = {
 
 const api = {
   async list() {
-    if (!isRemote()) return { tasks: localStore.read(), notes: localNotes.read() };
+    if (!isRemote()) return { tasks: localStore.read(), notes: localNotes.read(), version: SCRIPT_VERSION };
     const data = await remoteCall('list');
     // A script from before notes existed sends no notes.
-    return { tasks: data.tasks, notes: data.notes || [] };
+    return { tasks: data.tasks, notes: data.notes || [], version: Number(data.version) || 0 };
   },
   async history(id) {
     return (await remoteCall('history', { id })).entries;
@@ -192,7 +284,7 @@ function nextOccurrence(task) {
   let due = start;
   for (let step = 1; due <= today; step++) due = advanceDay(start, task.recurrence, step);
   const now = new Date().toISOString();
-  return { ...task, id: newId(), status: 'todo', dueDate: due, sortOrder: '', completedAt: '', createdAt: now, updatedAt: now, checklist: task.checklist.replace(/^\[x\]/gim, '[ ]') };
+  return { ...task, id: newId(), status: 'todo', dueDate: due, sortOrder: '', completedAt: '', focusDate: '', createdAt: now, updatedAt: now, checklist: task.checklist.replace(/^\[x\]/gim, '[ ]') };
 }
 
 async function withSync(fn) {
@@ -229,6 +321,7 @@ function normalize(task) {
     completedAt: task.completedAt || '',
     recurrence: task.recurrence || '',
     checklist: task.checklist || '',
+    focusDate: /^\d{4}-\d{2}-\d{2}$/.test(task.focusDate || '') ? task.focusDate : '',
     dueDate: /^\d{4}-\d{2}-\d{2}$/.test(task.dueDate || '') ? task.dueDate : '',
     createdAt: task.createdAt || '',
     updatedAt: task.updatedAt || '',
@@ -271,7 +364,8 @@ async function loadTasks() {
   try {
     await flushQueue();
     if (!state.queue.length) {
-      const { tasks, notes } = await withSync(() => api.list());
+      const { tasks, notes, version } = await withSync(() => api.list());
+      state.scriptOutdated = version < SCRIPT_VERSION;
       state.tasks = tasks.map(normalize);
       state.notes = notes.map(normalizeNote);
       state.loaded = true;
@@ -512,6 +606,11 @@ function parseLocal(s) {
 function isOpen(t) {
   return t.status !== 'done';
 }
+/** Picked for My day today. Yesterday's picks lapse without any write. */
+function isFocus(t) {
+  return t.focusDate === todayStr();
+}
+
 function isOverdue(t) {
   return isOpen(t) && Boolean(t.dueDate) && t.dueDate < todayStr();
 }
@@ -643,6 +742,7 @@ function visibleTasks() {
 function routeDefaults() {
   if (state.route.scope === 'project') return { project: state.route.project };
   if (state.route.scope === 'today') return { dueDate: todayStr() };
+  if (state.route.scope === 'myday') return { focusDate: todayStr() };
   return {};
 }
 
@@ -768,6 +868,7 @@ function renderHeader() {
   $('#pageTitle').textContent = title;
   document.title = `${title} · TaskBoard`;
   $('#newTaskBtn span').textContent = r.scope === 'notes' ? 'New note' : 'New task';
+  $('#planBtn').hidden = r.scope !== 'myday' && r.scope !== 'today';
 }
 
 /* ---------- Notes ---------- */
@@ -810,6 +911,7 @@ function noteCardHtml(n) {
 function renderBanners() {
   $('#setupBanner').hidden = isRemote();
   $('#errorBanner').hidden = !state.syncError;
+  $('#outdatedBanner').hidden = !(isRemote() && state.scriptOutdated);
   $('#errorText').textContent = state.syncError ? `Sync error: ${state.syncError}` : '';
 }
 
@@ -829,7 +931,7 @@ function renderSync() {
     el.title = state.syncError;
   } else {
     el.classList.add('ok');
-    el.textContent = isRemote() ? 'Synced with Google Sheets' : 'Local mode';
+    el.textContent = isRemote() ? `Synced with ${backendName()}` : 'Local mode';
   }
 }
 
@@ -879,6 +981,11 @@ function emptyStateHtml() {
       <h3>No matching tasks</h3><p>Try a different search or clear the priority filter.</p>
       <button class="btn" data-action="clear-filters">Clear filters</button></div>`;
   }
+  if (state.route.scope === 'myday') {
+    return `<div class="empty-state"><div class="empty-icon">${icon('sun')}</div>
+      <h3>Nothing picked for today</h3><p>Choose the tasks you'll work on today. Their due dates stay the same.</p>
+      <button class="btn primary" data-action="plan">${icon('sun')}Plan my day</button></div>`;
+  }
   return `<div class="empty-state"><div class="empty-icon">${icon('check')}</div>
     <h3>${state.route.scope === 'overdue' ? 'Nothing overdue' : 'No tasks here yet'}</h3>
     <p>${state.route.scope === 'overdue' ? 'You are on top of your deadlines.' : 'Create a task to start tracking your work.'}</p>
@@ -926,6 +1033,7 @@ function cardHtml(t) {
       <div class="card-foot">
         ${priorityHtml(t.priority)}
         ${dueHtml(t)}
+        ${isFocus(t) && !done ? `<span class="attach focus" title="In My day">${icon('sun')}</span>` : ''}
         ${links ? `<span class="attach" title="${plural(links, 'link')}">${icon('link')}${links}</span>` : ''}
         ${notes ? `<span class="attach" title="${plural(notes, 'note')}">${icon('note')}${notes}</span>` : ''}
         ${steps.length ? `<span class="attach" title="Checklist">${icon('checklist')}${steps.filter((x) => x.done).length}/${steps.length}</span>` : ''}
@@ -1242,6 +1350,7 @@ function openTaskDrawer(task = null, defaults = {}) {
   renderTaskNotes();
   loadHistory(task);
   if (!drawer.open) drawer.showModal();
+  taskForm.elements.focus.checked = isFocus(data);
   taskForm.elements.title.focus();
 }
 
@@ -1292,6 +1401,7 @@ taskForm.addEventListener('submit', (e) => {
     project: f.project.value.trim(),
     dueDate: f.dueDate.value,
     recurrence: f.recurrence.value,
+    focusDate: f.focus.checked ? todayStr() : '',
     checklist: formatChecklist(draftChecklist),
     tags: f.tags.value.split(',').map((x) => x.trim()).filter(Boolean).join(', '),
     links: f.links.value.split('\n').map((x) => x.trim()).filter((x) => /^https?:\/\//i.test(x)).join('\n'),
@@ -1437,6 +1547,68 @@ $$('dialog').forEach((d) =>
     if (e.target === d) d.close();
   }),
 );
+/* ---------- Plan my day ---------- */
+const planDialog = $('#planDialog');
+let planPicks = new Set();
+
+function openPlan() {
+  planPicks = new Set(state.tasks.filter((t) => isOpen(t) && isFocus(t)).map((t) => t.id));
+  $('#planSearch').value = '';
+  renderPlan();
+  planDialog.showModal();
+  $('#planSearch').focus();
+}
+
+function renderPlanCount() {
+  $('#planCount').textContent = `${planPicks.size} picked`;
+}
+
+// Due today and overdue first, as the likeliest picks; then everything else open.
+function renderPlan() {
+  const q = $('#planSearch').value.trim().toLowerCase();
+  const today = todayStr();
+  const open = state.tasks
+    .filter(isOpen)
+    .filter((t) => !q || `${t.title} ${t.project} ${t.tags}`.toLowerCase().includes(q))
+    .sort(defaultCompare);
+  const due = (t) => t.dueDate && t.dueDate <= today;
+  const groups = [
+    ['Due today or overdue', open.filter(due)],
+    ['Other open tasks', open.filter((t) => !due(t))],
+  ].filter(([, items]) => items.length);
+  const row = (t) => `<label class="plan-row">
+      <input type="checkbox" class="checkbox" data-plan="${esc(t.id)}" ${planPicks.has(t.id) ? 'checked' : ''}>
+      <span class="plan-title">${esc(t.title)}</span>
+      <span class="plan-meta">${priorityHtml(t.priority)}${dueHtml(t)}</span></label>`;
+  $('#planList').innerHTML = groups.length
+    ? groups.map(([label, items]) => `<div class="plan-group">${label}<span>${items.length}</span></div>${items.map(row).join('')}`).join('')
+    : `<p class="muted plan-empty">${q ? 'No matching tasks.' : 'No open tasks.'}</p>`;
+  renderPlanCount();
+}
+
+$('#planSearch').addEventListener('input', renderPlan);
+$('#planList').addEventListener('change', (e) => {
+  const id = e.target.dataset.plan;
+  if (!id) return;
+  if (e.target.checked) planPicks.add(id);
+  else planPicks.delete(id);
+  renderPlanCount();
+});
+$('#planForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  planDialog.close();
+  const today = todayStr();
+  const jobs = state.tasks
+    .filter((t) => isOpen(t) && planPicks.has(t.id) !== isFocus(t))
+    .map((prev) => ({ prev, op: { action: 'update', task: { ...prev, focusDate: planPicks.has(prev.id) ? today : '' } } }));
+  if (!jobs.length) return;
+  jobs.forEach((j) => putLocal(j.op.task));
+  if (state.route.scope === 'myday') render();
+  else go({ scope: 'myday' });
+  if (await send(jobs)) toast(`My day: ${plural(planPicks.size, 'task')}`);
+});
+$('#planBtn').addEventListener('click', openPlan);
+
 $$('[data-close]').forEach((b) => b.addEventListener('click', () => b.closest('dialog').close()));
 
 /* ==========================================================================
@@ -1445,13 +1617,103 @@ $$('[data-close]').forEach((b) => b.addEventListener('click', () => b.closest('d
 const settingsDialog = $('#settingsDialog');
 const settingsForm = $('#settingsForm');
 
+let settingsBackend = 'supabase';
+
 function openSettings() {
-  settingsForm.elements.url.value = state.config.url;
-  settingsForm.elements.token.value = state.config.token;
+  const sheets = !isSupabase() && isRemote();
+  settingsForm.elements.url.value = sheets ? state.config.url : '';
+  settingsForm.elements.token.value = sheets ? state.config.token : '';
+  const supa = isSupabase() ? state.config : SUPABASE_DEFAULT;
+  settingsForm.elements.supaUrl.value = supa.url;
+  settingsForm.elements.supaKey.value = supa.key;
+  settingsForm.elements.email.value = state.config.email || '';
+  settingsForm.elements.password.value = '';
   setSettingsStatus('');
   $('#qrSection').hidden = !setupLink();
+  showBackend(sheets ? 'sheets' : 'supabase');
   settingsDialog.showModal();
 }
+
+function showBackend(backend) {
+  settingsBackend = backend;
+  const signedIn = isSupabase() && isRemote();
+  $$('#backendSwitch button').forEach((b) => {
+    const active = b.dataset.backend === backend;
+    b.classList.toggle('active', active);
+    b.setAttribute('aria-selected', active);
+  });
+  $('#supabasePane').hidden = backend !== 'supabase';
+  $('#sheetsPane').hidden = backend !== 'sheets';
+  $('#supaSignedOut').hidden = signedIn;
+  $('#supaSignedIn').hidden = !signedIn;
+  $('#supaEmail').textContent = state.config.email || '';
+  $('#importBox').hidden = !signedIn || !storageGet(SHEETS_KEY, null);
+  $('#testBtn').hidden = backend !== 'sheets';
+  $('#settingsSubmit').textContent = backend === 'supabase' ? (signedIn ? 'Done' : 'Sign in') : 'Save';
+  setSettingsStatus('');
+}
+
+$('#backendSwitch').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-backend]');
+  if (btn) showBackend(btn.dataset.backend);
+});
+
+async function signIn() {
+  const f = settingsForm.elements;
+  const config = { backend: 'supabase', url: f.supaUrl.value.trim().replace(/\/+$/, ''), key: f.supaKey.value.trim() };
+  const email = f.email.value.trim();
+  const password = f.password.value;
+  if (!email || !password) return setSettingsStatus('Enter your email and password.', 'error');
+  // localhost is the Supabase CLI's local stack.
+  if (!/^(https:\/\/[\w-]+\.supabase\.co|http:\/\/(localhost|127\.0\.0\.1)(:\d+)?)$/.test(config.url) || !config.key) {
+    return setSettingsStatus('Check the project URL and key under Project.', 'error');
+  }
+  setSettingsStatus('Signing in…');
+  try {
+    config.session = await authRequest(config, 'password', { email, password });
+  } catch (err) {
+    return setSettingsStatus(err.message, 'error');
+  }
+  f.password.value = '';
+  config.email = config.session.email || email;
+  // Keep the sheet's address so its tasks can be copied over.
+  if (!isSupabase() && isRemote()) storageSet(SHEETS_KEY, { url: state.config.url, token: state.config.token });
+  connectTo(config);
+  showBackend('supabase');
+  setSettingsStatus(`Signed in as ${config.email}.`, 'ok');
+}
+
+$('#signOutBtn').addEventListener('click', async () => {
+  if (state.queue.length) {
+    return setSettingsStatus(`${plural(state.queue.length, 'change')} still waiting to sync. Reconnect first, then sign out.`, 'error');
+  }
+  const config = state.config;
+  fetch(`${config.url}/auth/v1/logout`, {
+    method: 'POST',
+    headers: { apikey: config.key, Authorization: `Bearer ${config.session ? config.session.access_token : ''}` },
+  }).catch(() => {});
+  $('#disconnectBtn').click();
+});
+
+$('#importBtn').addEventListener('click', async () => {
+  const sheets = storageGet(SHEETS_KEY, null);
+  if (!sheets) return;
+  const btn = $('#importBtn');
+  btn.disabled = true;
+  try {
+    setSettingsStatus('Reading your Google Sheet…');
+    const { tasks, notes } = await remoteCall('list', {}, sheets);
+    setSettingsStatus('Copying to Supabase…');
+    const result = await supabaseCall('import_data', { tasks, notes: notes || [] });
+    const skipped = result.skipped ? ` Skipped ${result.skipped} that were already here or unreadable.` : '';
+    setSettingsStatus(`Imported ${plural(result.tasks, 'task')} and ${plural(result.notes, 'note')}.${skipped}`, 'ok');
+    loadTasks();
+  } catch (err) {
+    setSettingsStatus(`Import failed: ${err.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 function connectTo(config) {
   state.config = config;
@@ -1492,6 +1754,11 @@ $('#testBtn').addEventListener('click', async () => {
 
 settingsForm.addEventListener('submit', (e) => {
   e.preventDefault();
+  if (settingsBackend === 'supabase') {
+    if (isSupabase() && isRemote()) settingsDialog.close();
+    else signIn();
+    return;
+  }
   const config = readSettingsForm();
   if (!config.url || !config.token) return setSettingsStatus('Enter both the URL and the token.', 'error');
   if (!/^https:\/\/script\.google(usercontent)?\.com\//.test(config.url)) {
@@ -1595,13 +1862,14 @@ function paletteCommands() {
   const actions = [
     { group: 'Actions', icon: 'plus', label: 'Create new task', hint: 'N', run: () => openTaskDrawer() },
     { group: 'Actions', icon: 'note', label: 'Create new note', run: () => openNoteDrawer() },
+    { group: 'Actions', icon: 'sun', label: 'Plan my day', run: () => openPlan() },
     { group: 'Actions', icon: 'board', label: 'Switch to board view', run: () => setView('board') },
     { group: 'Actions', icon: 'table', label: 'Switch to table view', run: () => setView('table') },
     { group: 'Actions', icon: 'calendar', label: 'Switch to calendar view', run: () => setView('calendar') },
     { group: 'Actions', icon: 'sun', label: 'Light theme', run: () => setTheme('light') },
     { group: 'Actions', icon: 'moon', label: 'Dark theme', run: () => setTheme('dark') },
     { group: 'Actions', icon: 'monitor', label: 'System theme', run: () => setTheme('system') },
-    { group: 'Actions', icon: 'refresh', label: 'Refresh from Google Sheets', run: loadTasks },
+    { group: 'Actions', icon: 'refresh', label: 'Refresh', run: loadTasks },
     { group: 'Actions', icon: 'settings', label: 'Connection settings', run: openSettings },
   ];
   return [...actions, ...nav, ...proj];
@@ -1736,6 +2004,7 @@ main.addEventListener('click', (e) => {
   if (action) {
     if (action.dataset.action === 'new') openTaskDrawer();
     if (action.dataset.action === 'new-note') openNoteDrawer();
+    if (action.dataset.action === 'plan') openPlan();
     if (action.dataset.action === 'clear-filters') clearFilters();
     return;
   }
@@ -2019,6 +2288,7 @@ $('#bulkbar').addEventListener('click', (e) => {
   if (!btn) return;
   const ids = new Set(state.selection);
   if (btn.dataset.bulk === 'done') bulkUpdate(ids, { status: 'done' });
+  if (btn.dataset.bulk === 'focus') bulkUpdate(ids, { focusDate: todayStr() });
   if (btn.dataset.bulk === 'delete') deleteTasks(ids);
   if (btn.dataset.bulk === 'clear') {
     state.selection.clear();

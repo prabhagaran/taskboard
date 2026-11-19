@@ -6,10 +6,7 @@ enum TaskStatus {
   const TaskStatus(this.label);
   final String label;
 
-  static TaskStatus parse(Object? value) => values.firstWhere(
-        (s) => s.name == value,
-        orElse: () => TaskStatus.todo,
-      );
+  static TaskStatus parse(Object? value) => values.firstWhere((s) => s.name == value, orElse: () => TaskStatus.todo);
 }
 
 enum TaskPriority {
@@ -20,10 +17,8 @@ enum TaskPriority {
   const TaskPriority(this.label);
   final String label;
 
-  static TaskPriority parse(Object? value) => values.firstWhere(
-        (p) => p.name == value,
-        orElse: () => TaskPriority.medium,
-      );
+  static TaskPriority parse(Object? value) =>
+      values.firstWhere((p) => p.name == value, orElse: () => TaskPriority.medium);
 }
 
 class Task {
@@ -41,6 +36,7 @@ class Task {
     this.completedAt = '',
     this.recurrence = '',
     this.checklist = '',
+    this.focusDate = '',
     this.createdAt = '',
     this.updatedAt = '',
   });
@@ -72,11 +68,13 @@ class Task {
 
   /// Steps as lines of `[ ] text` or `[x] text`.
   final String checklist;
+
+  /// The day the task was picked for My day; earlier days lapse on their own.
+  final String focusDate;
   final String createdAt;
   final String updatedAt;
 
-  List<String> get tagList =>
-      tags.split(',').map((t) => t.trim()).where((t) => t.isNotEmpty).toList();
+  List<String> get tagList => tags.split(',').map((t) => t.trim()).where((t) => t.isNotEmpty).toList();
 
   List<String> get linkList => cleanLinks(links).split('\n').where((l) => l.isNotEmpty).toList();
 
@@ -85,6 +83,9 @@ class Task {
   List<ChecklistItem> get steps => parseChecklist(checklist);
 
   bool get isOpen => status != TaskStatus.done;
+
+  /// Picked for My day today.
+  bool get isFocus => focusDate == todayKey();
   bool get isOverdue => isOpen && dueDate.isNotEmpty && dueDate.compareTo(todayKey()) < 0;
 
   factory Task.fromJson(Map<String, dynamic> json) {
@@ -104,28 +105,30 @@ class Task {
       completedAt: '${json['completedAt'] ?? ''}',
       recurrence: recurrenceLabels.containsKey(json['recurrence']) ? '${json['recurrence']}' : '',
       checklist: '${json['checklist'] ?? ''}',
+      focusDate: RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch('${json['focusDate'] ?? ''}') ? '${json['focusDate']}' : '',
       createdAt: '${json['createdAt'] ?? ''}',
       updatedAt: '${json['updatedAt'] ?? ''}',
     );
   }
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'title': title,
-        'description': description,
-        'status': status.name,
-        'priority': priority.name,
-        'project': project,
-        'dueDate': dueDate,
-        'tags': tags,
-        'links': links,
-        'sortOrder': sortOrder,
-        'completedAt': completedAt,
-        'recurrence': recurrence,
-        'checklist': checklist,
-        'createdAt': createdAt,
-        'updatedAt': updatedAt,
-      };
+    'id': id,
+    'title': title,
+    'description': description,
+    'status': status.name,
+    'priority': priority.name,
+    'project': project,
+    'dueDate': dueDate,
+    'tags': tags,
+    'links': links,
+    'sortOrder': sortOrder,
+    'completedAt': completedAt,
+    'recurrence': recurrence,
+    'checklist': checklist,
+    'focusDate': focusDate,
+    'createdAt': createdAt,
+    'updatedAt': updatedAt,
+  };
 
   Task copyWith({
     String? title,
@@ -139,28 +142,28 @@ class Task {
     String? sortOrder,
     String? recurrence,
     String? checklist,
-  }) =>
-      Task(
-        id: id,
-        title: title ?? this.title,
-        description: description ?? this.description,
-        status: status ?? this.status,
-        priority: priority ?? this.priority,
-        project: project ?? this.project,
-        dueDate: dueDate ?? this.dueDate,
-        tags: tags ?? this.tags,
-        links: links ?? this.links,
-        sortOrder: sortOrder ?? this.sortOrder,
-        completedAt: completedAt,
-        recurrence: recurrence ?? this.recurrence,
-        checklist: checklist ?? this.checklist,
-        createdAt: createdAt,
-        updatedAt: updatedAt,
-      );
+    String? focusDate,
+  }) => Task(
+    id: id,
+    title: title ?? this.title,
+    description: description ?? this.description,
+    status: status ?? this.status,
+    priority: priority ?? this.priority,
+    project: project ?? this.project,
+    dueDate: dueDate ?? this.dueDate,
+    tags: tags ?? this.tags,
+    links: links ?? this.links,
+    sortOrder: sortOrder ?? this.sortOrder,
+    completedAt: completedAt,
+    recurrence: recurrence ?? this.recurrence,
+    checklist: checklist ?? this.checklist,
+    focusDate: focusDate ?? this.focusDate,
+    createdAt: createdAt,
+    updatedAt: updatedAt,
+  );
 }
 
-String dateKey(DateTime d) =>
-    '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+String dateKey(DateTime d) => '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 
 String todayKey() => dateKey(DateTime.now());
 
@@ -197,18 +200,14 @@ String cleanLinks(String text) => text
     .join('\n');
 
 /// Normalizes user-typed tags to `a, b`.
-String cleanTags(String text) =>
-    text.split(',').map((t) => t.trim()).where((t) => t.isNotEmpty).join(', ');
+String cleanTags(String text) => text.split(',').map((t) => t.trim()).where((t) => t.isNotEmpty).join(', ');
 
 /// One entry of a task's change log.
 class HistoryEntry {
   const HistoryEntry({required this.at, required this.action, required this.details});
 
-  factory HistoryEntry.fromJson(Map<String, dynamic> json) => HistoryEntry(
-        at: '${json['at'] ?? ''}',
-        action: '${json['action'] ?? ''}',
-        details: '${json['details'] ?? ''}',
-      );
+  factory HistoryEntry.fromJson(Map<String, dynamic> json) =>
+      HistoryEntry(at: '${json['at'] ?? ''}', action: '${json['action'] ?? ''}', details: '${json['details'] ?? ''}');
 
   final String at;
   final String action;
@@ -220,11 +219,11 @@ class SavedFilter {
   const SavedFilter({required this.name, this.query = '', this.project = '', this.tag = ''});
 
   factory SavedFilter.fromJson(Map<String, dynamic> json) => SavedFilter(
-        name: '${json['name']}',
-        query: '${json['query'] ?? ''}',
-        project: '${json['project'] ?? ''}',
-        tag: '${json['tag'] ?? ''}',
-      );
+    name: '${json['name']}',
+    query: '${json['query'] ?? ''}',
+    project: '${json['project'] ?? ''}',
+    tag: '${json['tag'] ?? ''}',
+  );
 
   final String name;
   final String query;
@@ -256,8 +255,7 @@ List<ChecklistItem> parseChecklist(String text) {
   }).toList();
 }
 
-String formatChecklist(List<ChecklistItem> items) =>
-    items.map((i) => '[${i.done ? 'x' : ' '}] ${i.text}').join('\n');
+String formatChecklist(List<ChecklistItem> items) => items.map((i) => '[${i.done ? 'x' : ' '}] ${i.text}').join('\n');
 
 /// Local day a done task was finished. Tasks finished before completedAt
 /// existed fall back to their last update.

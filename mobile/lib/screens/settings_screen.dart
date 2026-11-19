@@ -17,7 +17,10 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   final _url = TextEditingController();
   final _token = TextEditingController();
+  final _email = TextEditingController();
+  final _password = TextEditingController();
   bool _busy = false;
+  bool _hidePassword = true;
   bool _hideToken = true;
   String? _status;
   bool _statusIsError = false;
@@ -26,6 +29,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void dispose() {
     _url.dispose();
     _token.dispose();
+    _email.dispose();
+    _password.dispose();
     super.dispose();
   }
 
@@ -42,9 +47,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   void _setStatus(String? text, {bool error = false}) => setState(() {
-        _status = text;
-        _statusIsError = error;
-      });
+    _status = text;
+    _statusIsError = error;
+  });
+
+  Future<void> _signIn() async {
+    final email = _email.text.trim();
+    final password = _password.text;
+    if (email.isEmpty || password.isEmpty) return _setStatus('Enter your email and password.', error: true);
+    final store = StoreScope.of(context);
+    setState(() => _busy = true);
+    _setStatus('Signing in…');
+    try {
+      await store.signIn(email, password);
+      if (!mounted) return;
+      _password.clear();
+      _setStatus('Signed in as ${store.accountEmail}.');
+    } on ApiException catch (e) {
+      if (mounted) _setStatus(e.message, error: true);
+    }
+    if (mounted) setState(() => _busy = false);
+  }
 
   Future<void> _connect() async {
     final problem = _validate();
@@ -71,9 +94,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // Fills in the form rather than connecting straight away, so a code from
   // someone else can't redirect your tasks without you seeing it.
   Future<void> _scan() async {
-    final link = await Navigator.of(context).push<SetupLink>(
-      MaterialPageRoute(builder: (_) => const ScanScreen()),
-    );
+    final link = await Navigator.of(context).push<SetupLink>(MaterialPageRoute(builder: (_) => const ScanScreen()));
     if (link == null || !mounted) return;
     _url.text = link.url;
     _token.text = link.token;
@@ -85,18 +106,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('Disconnect?'),
-        content: const Text(
-          'This removes the URL, token and saved tasks from this phone. Your Google Sheet is not changed.',
+        title: Text(store.isSupabase ? 'Sign out?' : 'Disconnect?'),
+        content: Text(
+          store.isSupabase
+              ? 'This removes your saved tasks from this phone. They stay in your account.'
+              : 'This removes the URL, token and saved tasks from this phone. Your Google Sheet is not changed.',
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('Cancel'),
-          ),
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('Disconnect'),
+            child: Text(store.isSupabase ? 'Sign out' : 'Disconnect'),
           ),
         ],
       ),
@@ -111,7 +131,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final text = Theme.of(context).textTheme;
 
     return Scaffold(
-      appBar: AppBar(title: Text(store.isConnected ? 'Settings' : 'Connect Google Sheet')),
+      appBar: AppBar(title: Text(store.isConnected ? 'Settings' : 'Sign in')),
       body: SafeArea(
         child: ListView(
           padding: EdgeInsets.symmetric(
@@ -123,79 +143,109 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ListTile(
                 contentPadding: EdgeInsets.zero,
                 leading: Icon(Icons.cloud_done_outlined, color: scheme.primary),
-                title: const Text('Connected to Google Sheets'),
-                subtitle: Text(
-                  store.syncing ? 'Syncing…' : '${store.tasks.length} tasks',
-                ),
-                trailing: IconButton(
-                  tooltip: 'Sync now',
-                  icon: const Icon(Icons.sync),
-                  onPressed: store.refresh,
-                ),
+                title: Text(store.isSupabase ? 'Signed in as ${store.accountEmail}' : 'Connected to Google Sheets'),
+                subtitle: Text(store.syncing ? 'Syncing…' : '${store.tasks.length} tasks'),
+                trailing: IconButton(tooltip: 'Sync now', icon: const Icon(Icons.sync), onPressed: store.refresh),
               ),
               OutlinedButton.icon(
                 onPressed: _disconnect,
-                icon: const Icon(Icons.link_off),
-                label: const Text('Disconnect'),
+                icon: Icon(store.isSupabase ? Icons.logout : Icons.link_off),
+                label: Text(store.isSupabase ? 'Sign out' : 'Disconnect'),
               ),
             ] else ...[
               Text(
-                'On a connected computer, open Connection settings on the website and show the QR code. '
-                'The token is kept in encrypted storage on this phone.',
+                'Sign in with your TaskBoard account to sync with the website.',
                 style: text.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
               ),
               const SizedBox(height: 16),
-              FilledButton.icon(
-                onPressed: _busy ? null : _scan,
-                icon: const Icon(Icons.qr_code_scanner),
-                label: const Text('Scan QR code'),
-              ),
-              const SizedBox(height: 16),
-              Text(
-                'Or enter them yourself',
-                textAlign: TextAlign.center,
-                style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
-              ),
-              const SizedBox(height: 12),
               TextField(
-                controller: _url,
-                keyboardType: TextInputType.url,
+                controller: _email,
+                keyboardType: TextInputType.emailAddress,
                 autocorrect: false,
-                decoration: const InputDecoration(
-                  labelText: 'Web app URL',
-                  hintText: 'https://script.google.com/macros/s/…/exec',
-                  border: OutlineInputBorder(),
-                ),
+                autofillHints: const [AutofillHints.email],
+                decoration: const InputDecoration(labelText: 'Email', border: OutlineInputBorder()),
               ),
               const SizedBox(height: 12),
               TextField(
-                controller: _token,
-                obscureText: _hideToken,
+                controller: _password,
+                obscureText: _hidePassword,
                 autocorrect: false,
                 enableSuggestions: false,
+                autofillHints: const [AutofillHints.password],
+                onSubmitted: (_) => _busy ? null : _signIn(),
                 decoration: InputDecoration(
-                  labelText: 'API token',
+                  labelText: 'Password',
                   border: const OutlineInputBorder(),
                   suffixIcon: IconButton(
-                    tooltip: _hideToken ? 'Show token' : 'Hide token',
-                    icon: Icon(_hideToken ? Icons.visibility : Icons.visibility_off),
-                    onPressed: () => setState(() => _hideToken = !_hideToken),
+                    tooltip: _hidePassword ? 'Show password' : 'Hide password',
+                    icon: Icon(_hidePassword ? Icons.visibility : Icons.visibility_off),
+                    onPressed: () => setState(() => _hidePassword = !_hidePassword),
                   ),
                 ),
               ),
               const SizedBox(height: 16),
-              OutlinedButton(
-                onPressed: _busy ? null : _connect,
-                child: Text(_busy ? 'Connecting…' : 'Connect'),
+              FilledButton(onPressed: _busy ? null : _signIn, child: Text(_busy ? 'Signing in…' : 'Sign in')),
+              const SizedBox(height: 8),
+              ExpansionTile(
+                tilePadding: EdgeInsets.zero,
+                shape: const Border(),
+                collapsedShape: const Border(),
+                title: const Text('Use a Google Sheet instead'),
+                childrenPadding: const EdgeInsets.only(bottom: 8),
+                children: [
+                  Text(
+                    'On a connected computer, open Connection settings on the website and show the QR code. '
+                    'The token is kept in encrypted storage on this phone.',
+                    style: text.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
+                  ),
+                  const SizedBox(height: 16),
+                  OutlinedButton.icon(
+                    onPressed: _busy ? null : _scan,
+                    icon: const Icon(Icons.qr_code_scanner),
+                    label: const Text('Scan QR code'),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Or enter them yourself',
+                    textAlign: TextAlign.center,
+                    style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _url,
+                    keyboardType: TextInputType.url,
+                    autocorrect: false,
+                    decoration: const InputDecoration(
+                      labelText: 'Web app URL',
+                      hintText: 'https://script.google.com/macros/s/…/exec',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _token,
+                    obscureText: _hideToken,
+                    autocorrect: false,
+                    enableSuggestions: false,
+                    decoration: InputDecoration(
+                      labelText: 'API token',
+                      border: const OutlineInputBorder(),
+                      suffixIcon: IconButton(
+                        tooltip: _hideToken ? 'Show token' : 'Hide token',
+                        icon: Icon(_hideToken ? Icons.visibility : Icons.visibility_off),
+                        onPressed: () => setState(() => _hideToken = !_hideToken),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  OutlinedButton(onPressed: _busy ? null : _connect, child: Text(_busy ? 'Connecting…' : 'Connect')),
+                ],
               ),
             ],
             if (_status != null)
               Padding(
                 padding: const EdgeInsets.only(top: 12),
-                child: Text(
-                  _status!,
-                  style: TextStyle(color: _statusIsError ? scheme.error : scheme.primary),
-                ),
+                child: Text(_status!, style: TextStyle(color: _statusIsError ? scheme.error : scheme.primary)),
               ),
             if (store.isConnected)
               Padding(

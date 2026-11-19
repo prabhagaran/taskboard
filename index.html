@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TaskBoard</title>
-  <meta name="description" content="Task management workspace backed by Google Sheets">
+  <meta name="description" content="Task management workspace that syncs through Supabase or Google Sheets">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect width='24' height='24' rx='6' fill='%234f46e5'/><path d='M7 12.5l3 3 7-7' stroke='white' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
   <script>
     // Apply the saved theme before first paint to avoid a flash.
@@ -16,7 +16,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
-  <link rel="stylesheet" href="styles.css?v=10">
+  <link rel="stylesheet" href="styles.css?v=12">
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -114,6 +114,10 @@
           <button class="icon-btn" id="themeBtn" type="button" aria-label="Change theme">
             <svg class="i"><use href="#i-monitor"/></svg>
           </button>
+          <button class="btn" id="planBtn" type="button" hidden>
+            <svg class="i"><use href="#i-sun"/></svg>
+            <span>Plan my day</span>
+          </button>
           <button class="btn primary" id="newTaskBtn" type="button">
             <svg class="i"><use href="#i-plus"/></svg>
             <span>New task</span>
@@ -124,14 +128,19 @@
 
       <div id="setupBanner" class="banner info" hidden>
         <svg class="i"><use href="#i-link"/></svg>
-        <span><strong>Local mode.</strong> Tasks are stored in this browser only. Connect a Google Sheet to sync across devices.</span>
-        <button id="bannerConnectBtn" class="btn small" type="button">Connect Google Sheet</button>
+        <span><strong>Local mode.</strong> Tasks are stored in this browser only. Sign in to sync across devices.</span>
+        <button id="bannerConnectBtn" class="btn small" type="button">Sign in</button>
       </div>
       <div id="errorBanner" class="banner error" hidden>
         <svg class="i"><use href="#i-alert"/></svg>
         <span id="errorText"></span>
         <button id="errorSettingsBtn" class="btn small" type="button">Open settings</button>
         <button id="errorRetryBtn" class="btn small" type="button">Retry</button>
+      </div>
+
+      <div id="outdatedBanner" class="banner error" hidden>
+        <svg class="i"><use href="#i-alert"/></svg>
+        <span><strong>Apps Script is out of date.</strong> Notes and My day won't save until you paste the latest <code>Code.gs</code> into Apps Script and deploy it as a new version.</span>
       </div>
 
       <div class="toolbar" id="toolbar">
@@ -165,6 +174,7 @@
       <div class="bulkbar" id="bulkbar" hidden>
         <span id="bulkCount"></span>
         <button class="btn small" data-bulk="done" type="button"><svg class="i"><use href="#i-done"/></svg>Mark done</button>
+        <button class="btn small" data-bulk="focus" type="button"><svg class="i"><use href="#i-sun"/></svg>Add to My day</button>
         <select class="select small" id="bulkStatus" aria-label="Set status">
           <option value="">Set status…</option>
           <option value="todo">To Do</option>
@@ -233,6 +243,10 @@
               <option value="monthly">Every month</option>
               <option value="yearly">Every year</option>
             </select>
+          </label>
+          <label class="prop">
+            <span class="prop-label"><svg class="i"><use href="#i-sun"/></svg>My day</span>
+            <span class="prop-check"><input name="focus" type="checkbox" class="checkbox"> Working on it today</span>
           </label>
         </div>
         <datalist id="projectList"></datalist>
@@ -303,22 +317,78 @@
     </form>
   </dialog>
 
+  <dialog id="planDialog" class="modal plan-modal" aria-labelledby="planTitle">
+    <form id="planForm" method="dialog">
+      <div class="modal-head">
+        <h2 id="planTitle">Plan my day</h2>
+        <button type="button" class="icon-btn ghost" data-close aria-label="Close"><svg class="i"><use href="#i-x"/></svg></button>
+      </div>
+      <p class="muted">Pick the tasks you'll work on today. Due dates stay the same, and tomorrow starts with a fresh list.</p>
+      <input id="planSearch" class="input" type="search" placeholder="Search tasks" autocomplete="off" aria-label="Search tasks">
+      <div id="planList" class="plan-list"></div>
+      <div class="modal-foot">
+        <span id="planCount" class="muted"></span>
+        <span class="spacer"></span>
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="settingsDialog" class="modal" aria-labelledby="settingsTitle">
     <form id="settingsForm" method="dialog">
       <div class="modal-head">
-        <h2 id="settingsTitle">Connect Google Sheet</h2>
+        <h2 id="settingsTitle">Connection</h2>
         <button type="button" class="icon-btn ghost" data-close aria-label="Close"><svg class="i"><use href="#i-x"/></svg></button>
       </div>
-      <p class="muted">Paste the Apps Script web app URL and the API token printed by <code>setup()</code>.
-        Both are stored only in this browser.</p>
-      <label class="field">
-        <span>Web app URL</span>
-        <input name="url" class="input" type="url" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off">
-      </label>
-      <label class="field">
-        <span>API token</span>
-        <input name="token" class="input" type="password" autocomplete="off">
-      </label>
+      <div class="segmented" id="backendSwitch" role="tablist" aria-label="Where tasks are stored">
+        <button type="button" role="tab" data-backend="supabase">Supabase</button>
+        <button type="button" role="tab" data-backend="sheets">Google Sheets</button>
+      </div>
+      <div id="supabasePane" class="settings-pane">
+        <div id="supaSignedOut" class="settings-pane">
+          <p class="muted">Sign in with your TaskBoard account. Your password is sent only to Supabase and never stored.</p>
+          <label class="field">
+            <span>Email</span>
+            <input name="email" class="input" type="email" autocomplete="username">
+          </label>
+          <label class="field">
+            <span>Password</span>
+            <input name="password" class="input" type="password" autocomplete="current-password">
+          </label>
+        </div>
+        <div id="supaSignedIn" class="settings-pane" hidden>
+          <p>Signed in as <strong id="supaEmail"></strong>. Tasks sync through Supabase.</p>
+          <div id="importBox" class="import-box" hidden>
+            <p class="muted">Copy the tasks and notes from the Google Sheet you used before. Your sheet isn't changed, and running it again skips anything already copied.</p>
+            <button type="button" id="importBtn" class="btn">Import from Google Sheet</button>
+          </div>
+          <div><button type="button" id="signOutBtn" class="btn ghost small">Sign out</button></div>
+        </div>
+        <details class="advanced">
+          <summary>Project</summary>
+          <label class="field">
+            <span>Project URL</span>
+            <input name="supaUrl" class="input" type="url" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>Publishable key</span>
+            <input name="supaKey" class="input" autocomplete="off">
+          </label>
+        </details>
+      </div>
+      <div id="sheetsPane" class="settings-pane" hidden>
+        <p class="muted">Paste the Apps Script web app URL and the API token printed by <code>setup()</code>.
+          Both are stored only in this browser.</p>
+        <label class="field">
+          <span>Web app URL</span>
+          <input name="url" class="input" type="url" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off">
+        </label>
+        <label class="field">
+          <span>API token</span>
+          <input name="token" class="input" type="password" autocomplete="off">
+        </label>
+      </div>
       <p id="settingsStatus" class="settings-status"></p>
       <div id="qrSection" class="qr-section" hidden>
         <button type="button" id="qrBtn" class="btn">Show QR code for another device</button>
@@ -333,7 +403,7 @@
         <button type="button" id="disconnectBtn" class="btn ghost">Use local mode</button>
         <span class="spacer"></span>
         <button type="button" id="testBtn" class="btn">Test connection</button>
-        <button type="submit" class="btn primary">Save</button>
+        <button type="submit" class="btn primary" id="settingsSubmit">Save</button>
       </div>
     </form>
   </dialog>
@@ -385,6 +455,6 @@
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
   <script src="vendor/qrcode.js"></script>
-  <script src="app.js?v=10"></script>
+  <script src="app.js?v=12"></script>
 </body>
 </html>

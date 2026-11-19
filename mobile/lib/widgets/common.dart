@@ -60,11 +60,11 @@ String dueLabel(String key) {
   return shortDate(key);
 }
 
-Future<void> openEditor(BuildContext context, {Task? task, String dueDate = ''}) =>
+Future<void> openEditor(BuildContext context, {Task? task, String dueDate = '', bool focus = false}) =>
     Navigator.of(context).push(
       MaterialPageRoute(
         fullscreenDialog: task == null,
-        builder: (_) => TaskEditor(task: task, initialDueDate: dueDate),
+        builder: (_) => TaskEditor(task: task, initialDueDate: dueDate, initialFocus: focus),
       ),
     );
 
@@ -166,6 +166,8 @@ class TaskTile extends StatelessWidget {
                 _Meta(icon: Icons.link, label: '${task.linkList.length}'),
               if (notes > 0)
                 _Meta(icon: Icons.sticky_note_2_outlined, label: '$notes'),
+              if (task.isFocus && !done)
+                _Meta(icon: Icons.wb_sunny_outlined, label: 'My day', color: Theme.of(context).colorScheme.tertiary),
               if (task.steps.isNotEmpty)
                 _Meta(
                   icon: Icons.checklist,
@@ -277,7 +279,7 @@ class SyncErrorBar extends StatelessWidget {
     final store = StoreScope.of(context);
     final error = store.syncError;
     final waiting = store.queue.length;
-    if (error == null && waiting == 0) return const SizedBox.shrink();
+    if (error == null && waiting == 0 && !store.scriptOutdated) return const SizedBox.shrink();
     final scheme = Theme.of(context).colorScheme;
     return Material(
       color: scheme.errorContainer,
@@ -293,7 +295,9 @@ class SyncErrorBar extends StatelessWidget {
                 child: Text(
                   waiting > 0
                       ? '$waiting change${waiting == 1 ? '' : 's'} waiting to sync. Tap to retry.'
-                      : 'Showing saved tasks. $error Tap to retry.',
+                      : error != null
+                          ? 'Showing saved tasks. $error Tap to retry.'
+                          : 'Apps Script is out of date, so notes and My day won\'t save. Paste the latest Code.gs and deploy a new version.',
                   style: TextStyle(color: scheme.onErrorContainer, fontSize: 13),
                 ),
               ),
