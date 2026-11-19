@@ -1,4 +1,4 @@
-/// Wire values match the Google Sheet columns, so `.name` is sent as-is.
+/// Wire values match the database, so `.name` is sent as-is.
 enum TaskStatus {
   todo('To Do'),
   done('Done');

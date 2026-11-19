@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TaskBoard</title>
-  <meta name="description" content="Task management workspace that syncs through Supabase or Google Sheets">
+  <meta name="description" content="Task management workspace that syncs through Supabase">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect width='24' height='24' rx='6' fill='%234f46e5'/><path d='M7 12.5l3 3 7-7' stroke='white' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
   <script>
     // Apply the saved theme before first paint to avoid a flash.
@@ -16,7 +16,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
-  <link rel="stylesheet" href="styles.css?v=12">
+  <link rel="stylesheet" href="styles.css?v=13">
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -136,11 +136,6 @@
         <span id="errorText"></span>
         <button id="errorSettingsBtn" class="btn small" type="button">Open settings</button>
         <button id="errorRetryBtn" class="btn small" type="button">Retry</button>
-      </div>
-
-      <div id="outdatedBanner" class="banner error" hidden>
-        <svg class="i"><use href="#i-alert"/></svg>
-        <span><strong>Apps Script is out of date.</strong> Notes and My day won't save until you paste the latest <code>Code.gs</code> into Apps Script and deploy it as a new version.</span>
       </div>
 
       <div class="toolbar" id="toolbar">
@@ -341,10 +336,6 @@
         <h2 id="settingsTitle">Connection</h2>
         <button type="button" class="icon-btn ghost" data-close aria-label="Close"><svg class="i"><use href="#i-x"/></svg></button>
       </div>
-      <div class="segmented" id="backendSwitch" role="tablist" aria-label="Where tasks are stored">
-        <button type="button" role="tab" data-backend="supabase">Supabase</button>
-        <button type="button" role="tab" data-backend="sheets">Google Sheets</button>
-      </div>
       <div id="supabasePane" class="settings-pane">
         <div id="supaSignedOut" class="settings-pane">
           <p class="muted">Sign in with your TaskBoard account. Your password is sent only to Supabase and never stored.</p>
@@ -359,10 +350,6 @@
         </div>
         <div id="supaSignedIn" class="settings-pane" hidden>
           <p>Signed in as <strong id="supaEmail"></strong>. Tasks sync through Supabase.</p>
-          <div id="importBox" class="import-box" hidden>
-            <p class="muted">Copy the tasks and notes from the Google Sheet you used before. Your sheet isn't changed, and running it again skips anything already copied.</p>
-            <button type="button" id="importBtn" class="btn">Import from Google Sheet</button>
-          </div>
           <div><button type="button" id="signOutBtn" class="btn ghost small">Sign out</button></div>
         </div>
         <details class="advanced">
@@ -377,48 +364,11 @@
           </label>
         </details>
       </div>
-      <div id="sheetsPane" class="settings-pane" hidden>
-        <p class="muted">Paste the Apps Script web app URL and the API token printed by <code>setup()</code>.
-          Both are stored only in this browser.</p>
-        <label class="field">
-          <span>Web app URL</span>
-          <input name="url" class="input" type="url" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off">
-        </label>
-        <label class="field">
-          <span>API token</span>
-          <input name="token" class="input" type="password" autocomplete="off">
-        </label>
-      </div>
       <p id="settingsStatus" class="settings-status"></p>
-      <div id="qrSection" class="qr-section" hidden>
-        <button type="button" id="qrBtn" class="btn">Show QR code for another device</button>
-        <div id="qrBox" hidden>
-          <div id="qrCode" class="qr-code"></div>
-          <p class="muted">Scan with the TaskBoard app, or your phone's camera to open this site connected.
-            <strong>Anyone who scans this can read and change your tasks,</strong> so don't share or screenshot it.</p>
-          <button type="button" id="copyLinkBtn" class="btn small">Copy setup link</button>
-        </div>
-      </div>
       <div class="modal-foot">
         <button type="button" id="disconnectBtn" class="btn ghost">Use local mode</button>
         <span class="spacer"></span>
-        <button type="button" id="testBtn" class="btn">Test connection</button>
         <button type="submit" class="btn primary" id="settingsSubmit">Save</button>
-      </div>
-    </form>
-  </dialog>
-
-  <dialog id="connectDialog" class="modal" aria-labelledby="connectTitle">
-    <form id="connectForm" method="dialog">
-      <div class="modal-head">
-        <h2 id="connectTitle">Connect to this Google Sheet?</h2>
-      </div>
-      <p class="muted">Only continue if this is your own setup link. TaskBoard will send your tasks to this script:</p>
-      <p><code id="connectScript"></code></p>
-      <div class="modal-foot">
-        <span class="spacer"></span>
-        <button type="button" class="btn" data-close>Cancel</button>
-        <button type="submit" class="btn primary">Connect</button>
       </div>
     </form>
   </dialog>
@@ -454,7 +404,6 @@
   <div id="tooltip" class="tooltip" role="tooltip"></div>
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
-  <script src="vendor/qrcode.js"></script>
-  <script src="app.js?v=12"></script>
+  <script src="app.js?v=13"></script>
 </body>
 </html>

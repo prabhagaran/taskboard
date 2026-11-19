@@ -13,12 +13,12 @@ import '../models/task.dart';
 import 'api.dart';
 import 'reminders.dart';
 
-const _urlKey = 'url';
+// Left behind by versions that used Google Sheets; removed on start.
+const _legacyUrlKey = 'url';
+const _legacyTokenKey = 'token';
 const _cacheKey = 'tasks';
 const _notesCacheKey = 'notes';
 const _themeKey = 'theme';
-const _tokenKey = 'token';
-const _backendKey = 'backend';
 const _sessionKey = 'session';
 const _filtersKey = 'savedFilters';
 const _queueKey = 'queue';
@@ -63,30 +63,16 @@ class TaskStore extends ChangeNotifier {
   bool remindersOn = false;
   String? syncError;
 
-  /// Set when Apps Script is older than this app needs, so some changes can't be saved.
-  bool scriptOutdated = false;
-
-  /// The Apps Script API_VERSION this app needs.
-  static const scriptVersion = 3;
   List<Task> tasks = [];
   List<Note> notes = [];
   List<SavedFilter> savedFilters = [];
   List<Map<String, dynamic>> queue = [];
   ThemeMode themeMode = ThemeMode.system;
-  String url = '';
 
   bool get isConnected => _api != null;
 
-  /// Signed in to Supabase, rather than connected to a Google Sheet.
-  bool get isSupabase => _api is SupabaseApi;
-
-  /// The Supabase account's email, or empty for a Google Sheet.
-  String get accountEmail => switch (_api) {
-    final SupabaseApi api => api.email,
-    _ => '',
-  };
-
-  String get backendName => isSupabase ? 'Supabase' : 'Google Sheets';
+  /// The signed-in account's email.
+  String get accountEmail => _api?.email ?? '';
 
   List<String> get projects {
     final names = tasks.map((t) => t.project).where((p) => p.isNotEmpty).toSet().toList();
@@ -137,16 +123,14 @@ class TaskStore extends ChangeNotifier {
       (m) => m.name == _prefs.getString(_themeKey),
       orElse: () => ThemeMode.system,
     );
-    url = _prefs.getString(_urlKey) ?? '';
-    final token = await _secure.read(key: _tokenKey);
+    await _prefs.remove(_legacyUrlKey);
+    await _secure.delete(key: _legacyTokenKey);
     final session = await _secure.read(key: _sessionKey);
-    if (_prefs.getString(_backendKey) == 'supabase' && session != null) {
-      _api = _supabaseApi(SupabaseSession.fromJson(jsonDecode(session) as Map<String, dynamic>));
-    } else if (url.isNotEmpty && token != null) {
-      _api = TaskApi(url: url, token: token);
+    if (session != null) {
+      _api = _taskApi(SupabaseSession.fromJson(jsonDecode(session) as Map<String, dynamic>));
     }
     if (_api != null) {
-      // Show the last synced tasks at once; Apps Script can take seconds.
+      // Show the last synced tasks at once, before the network answers.
       final cached = _prefs.getString(_cacheKey);
       if (cached != null) {
         tasks = (jsonDecode(cached) as List).map((t) => Task.fromJson(t as Map<String, dynamic>)).toList();
@@ -178,7 +162,6 @@ class TaskStore extends ChangeNotifier {
           final data = await api.list();
           tasks = data.tasks;
           notes = data.notes;
-          scriptOutdated = data.version < scriptVersion;
           _saveCache();
         }
         syncError = null;
@@ -190,46 +173,25 @@ class TaskStore extends ChangeNotifier {
     });
   }
 
-  /// Returns the number of tasks in the sheet, or throws [ApiException].
-  Future<int> testConnection(String url, String token) async =>
-      (await TaskApi(url: url, token: token).list()).tasks.length;
-
-  SupabaseApi _supabaseApi(SupabaseSession session) => SupabaseApi(
+  TaskApi _taskApi(SupabaseSession session) => TaskApi(
     session: session,
     onSession: (next) => _secure.write(key: _sessionKey, value: jsonEncode(next.toJson())),
   );
 
-  /// Signs in to Supabase and syncs from there. Throws [ApiException].
+  /// Signs in and syncs. Throws [ApiException].
   Future<void> signIn(String email, String password) async {
-    final session = await SupabaseApi.signIn(email, password);
+    final session = await TaskApi.signIn(email, password);
     await _secure.write(key: _sessionKey, value: jsonEncode(session.toJson()));
-    await _prefs.setString(_backendKey, 'supabase');
     await _clearLocalData();
-    _api = _supabaseApi(session);
+    _api = _taskApi(session);
     await refresh();
   }
 
-  Future<void> connect(String newUrl, String token) async {
-    url = newUrl;
-    await _prefs.setString(_urlKey, newUrl);
-    await _prefs.setString(_backendKey, 'sheets');
-    await _secure.delete(key: _sessionKey);
-    await _secure.write(key: _tokenKey, value: token);
-    await _clearLocalData();
-    _api = TaskApi(url: newUrl, token: token);
-    await refresh();
-  }
-
-  Future<void> disconnect() async {
-    final api = _api;
-    if (api is SupabaseApi) await api.signOut();
-    url = '';
+  Future<void> signOut() async {
+    await _api?.signOut();
     _api = null;
-    await _prefs.remove(_backendKey);
-    await _secure.delete(key: _sessionKey);
     syncError = null;
-    await _prefs.remove(_urlKey);
-    await _secure.delete(key: _tokenKey);
+    await _secure.delete(key: _sessionKey);
     await _clearLocalData();
     await _reminders.cancelAll();
     await _updateWidget();

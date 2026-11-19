@@ -19,86 +19,6 @@ class NetworkException extends ApiException {
   NetworkException(super.message);
 }
 
-/// Client for the Apps Script web app in `apps-script/Code.gs`.
-class TaskApi {
-  TaskApi({required this.url, required this.token, http.Client? client}) : _client = client ?? http.Client();
-
-  final String url;
-  final String token;
-  final http.Client _client;
-
-  static const _timeout = Duration(seconds: 30);
-
-  Future<({List<Task> tasks, List<Note> notes, int version})> list() async {
-    final data = await _call('list');
-    return (
-      tasks: (data['tasks'] as List).map((t) => Task.fromJson(t as Map<String, dynamic>)).toList(),
-      // A script from before notes existed sends no notes.
-      notes: ((data['notes'] as List?) ?? const []).map((n) => Note.fromJson(n as Map<String, dynamic>)).toList(),
-      version: int.tryParse('${data['version'] ?? ''}') ?? 0,
-    );
-  }
-
-  /// Applies writes in order under one lock; each op reports its own result.
-  Future<List<Map<String, dynamic>>> batch(List<Map<String, dynamic>> ops) async {
-    final data = await _call('batch', {'ops': ops});
-    return (data['results'] as List).cast<Map<String, dynamic>>();
-  }
-
-  Future<List<HistoryEntry>> history(String id) async {
-    final data = await _call('history', {'id': id});
-    return (data['entries'] as List).map((e) => HistoryEntry.fromJson(e as Map<String, dynamic>)).toList();
-  }
-
-  Future<Map<String, dynamic>> _call(String action, [Map<String, dynamic> payload = const {}]) async {
-    http.Response res;
-    try {
-      res = await _client
-          .post(
-            Uri.parse(url),
-            headers: {'Content-Type': 'text/plain;charset=utf-8'},
-            body: jsonEncode({'action': action, 'token': token, ...payload}),
-          )
-          .timeout(_timeout);
-      // Apps Script runs the POST, then redirects to its result. package:http
-      // only follows redirects for GET, so fetch the result here.
-      final location = res.headers['location'];
-      if (res.statusCode >= 300 && res.statusCode < 400 && location != null) {
-        res = await _client.get(Uri.parse(location)).timeout(_timeout);
-      }
-    } on TimeoutException {
-      throw NetworkException('The server took too long to respond.');
-    } catch (_) {
-      throw NetworkException('Could not reach the server. Check your connection.');
-    }
-
-    if (res.statusCode >= 500) {
-      throw NetworkException('Server responded ${res.statusCode}.');
-    }
-    if (res.statusCode != 200) {
-      throw ApiException('Server responded ${res.statusCode}.');
-    }
-    final Object? decoded;
-    try {
-      decoded = jsonDecode(utf8.decode(res.bodyBytes));
-    } on FormatException {
-      throw ApiException('Unexpected response. Check the web app URL and that access is set to "Anyone".');
-    }
-    if (decoded is! Map<String, dynamic>) {
-      throw ApiException('Unexpected response from the server.');
-    }
-    if (decoded['ok'] != true) {
-      final error = '${decoded['error'] ?? 'Request failed.'}';
-      throw ApiException(
-        error.startsWith('Unknown action')
-            ? 'Apps Script is out of date. Deploy the latest Code.gs as a new version.'
-            : error,
-      );
-    }
-    return decoded;
-  }
-}
-
 /// This app's Supabase project. The publishable key is meant to be public:
 /// row-level security keeps each account's tasks private.
 const supabaseUrl = 'https://pymvievtqpkbnblmkwlz.supabase.co';
@@ -131,6 +51,10 @@ class SupabaseSession {
 
   bool get expiresSoon => expiresAt - 60 < DateTime.now().millisecondsSinceEpoch ~/ 1000;
 
+  SupabaseSession withEmail(String fallback) => email.isNotEmpty
+      ? this
+      : SupabaseSession(accessToken: accessToken, refreshToken: refreshToken, expiresAt: expiresAt, email: fallback);
+
   Map<String, dynamic> toJson() => {
     'access_token': accessToken,
     'refresh_token': refreshToken,
@@ -139,24 +63,28 @@ class SupabaseSession {
   };
 }
 
-/// Client for the database functions in `supabase/schema.sql`. They answer
-/// like the Apps Script web app, so the rest of the app is unchanged.
-class SupabaseApi extends TaskApi {
-  SupabaseApi({
-    super.url = supabaseUrl,
-    this.key = supabaseKey,
+/// Client for the database functions in `supabase/schema.sql`: list_all,
+/// apply_ops (batched writes) and task_history.
+class TaskApi {
+  TaskApi({
     required SupabaseSession session,
     required this.onSession,
-    super.client,
+    this.url = supabaseUrl,
+    this.key = supabaseKey,
+    http.Client? client,
   }) : _session = session, // ignore: prefer_initializing_formals
-       super(token: '');
+       _client = client ?? http.Client();
 
+  final String url;
   final String key;
+  final http.Client _client;
   SupabaseSession _session;
 
   /// Saves a refreshed session.
   final Future<void> Function(SupabaseSession session) onSession;
   Future<SupabaseSession>? _refreshing;
+
+  static const _timeout = Duration(seconds: 30);
 
   String get email => _session.email;
 
@@ -166,72 +94,28 @@ class SupabaseApi extends TaskApi {
     String url = supabaseUrl,
     String key = supabaseKey,
     http.Client? client,
-  }) => _auth(client ?? http.Client(), url, key, 'password', {'email': email, 'password': password});
+  }) async {
+    final session = await _auth(client ?? http.Client(), url, key, 'password', {'email': email, 'password': password});
+    return session.withEmail(email);
+  }
 
-  static Future<SupabaseSession> _auth(
-    http.Client client,
-    String url,
-    String key,
-    String grant,
-    Map<String, String> body,
-  ) async {
-    http.Response res;
-    try {
-      res = await client
-          .post(
-            Uri.parse('$url/auth/v1/token?grant_type=$grant'),
-            headers: {'apikey': key, 'Content-Type': 'application/json'},
-            body: jsonEncode(body),
-          )
-          .timeout(TaskApi._timeout);
-    } on TimeoutException {
-      throw NetworkException('Supabase took too long to respond.');
-    } catch (_) {
-      throw NetworkException('Could not reach Supabase. Check your connection.');
-    }
-    if (res.statusCode >= 500) throw NetworkException('Supabase responded ${res.statusCode}.');
-    final Object? data = _decode(res);
-    if (res.statusCode != 200 || data is! Map<String, dynamic>) {
-      final map = data is Map ? data : const {};
-      throw ApiException('${map['error_description'] ?? map['msg'] ?? map['message'] ?? 'Sign-in failed.'}');
-    }
-    final session = SupabaseSession.fromJson(data);
-    return SupabaseSession(
-      accessToken: session.accessToken,
-      refreshToken: session.refreshToken,
-      expiresAt: session.expiresAt,
-      email: session.email.isEmpty ? (body['email'] ?? '') : session.email,
+  Future<({List<Task> tasks, List<Note> notes})> list() async {
+    final data = await _rpc('list_all', {});
+    return (
+      tasks: (data['tasks'] as List).map((t) => Task.fromJson(t as Map<String, dynamic>)).toList(),
+      notes: ((data['notes'] as List?) ?? const []).map((n) => Note.fromJson(n as Map<String, dynamic>)).toList(),
     );
   }
 
-  static Object? _decode(http.Response res) {
-    try {
-      return jsonDecode(utf8.decode(res.bodyBytes));
-    } on FormatException {
-      return null;
-    }
+  /// Applies writes in order; each op reports its own result.
+  Future<List<Map<String, dynamic>>> batch(List<Map<String, dynamic>> ops) async {
+    final data = await _rpc('apply_ops', {'ops': ops, 'today': todayKey()});
+    return (data['results'] as List).cast<Map<String, dynamic>>();
   }
 
-  Future<SupabaseSession> _fresh({bool force = false}) async {
-    if (!force && !_session.expiresSoon) return _session;
-    final pending = _refreshing ??= _auth(_client, url, key, 'refresh_token', {'refresh_token': _session.refreshToken})
-        .then((next) async {
-          final kept = SupabaseSession(
-            accessToken: next.accessToken,
-            refreshToken: next.refreshToken,
-            expiresAt: next.expiresAt,
-            email: next.email.isEmpty ? _session.email : next.email,
-          );
-          _session = kept;
-          await onSession(kept);
-          return kept;
-        })
-        .catchError((Object e) {
-          if (e is NetworkException) throw e;
-          throw ApiException('Your sign-in has expired. Sign in again in Settings.');
-        })
-        .whenComplete(() => _refreshing = null);
-    return pending;
+  Future<List<HistoryEntry>> history(String id) async {
+    final data = await _rpc('task_history', {'p_task_id': id});
+    return (data['entries'] as List).map((e) => HistoryEntry.fromJson(e as Map<String, dynamic>)).toList();
   }
 
   /// Best effort: ends the session on the server too.
@@ -246,48 +130,87 @@ class SupabaseApi extends TaskApi {
     } catch (_) {}
   }
 
-  @override
-  Future<Map<String, dynamic>> _call(String action, [Map<String, dynamic> payload = const {}]) {
-    switch (action) {
-      case 'list':
-        return _rpc('list_all', {});
-      case 'batch':
-        return _rpc('apply_ops', {'ops': payload['ops'], 'today': todayKey()});
-      case 'history':
-        return _rpc('task_history', {'p_task_id': payload['id']});
+  static Future<SupabaseSession> _auth(
+    http.Client client,
+    String url,
+    String key,
+    String grant,
+    Map<String, String> body,
+  ) async {
+    final res = await _send(
+      () => client.post(
+        Uri.parse('$url/auth/v1/token?grant_type=$grant'),
+        headers: {'apikey': key, 'Content-Type': 'application/json'},
+        body: jsonEncode(body),
+      ),
+    );
+    final data = _decode(res);
+    if (res.statusCode != 200 || data is! Map<String, dynamic>) {
+      final map = data is Map ? data : const {};
+      throw ApiException('${map['error_description'] ?? map['msg'] ?? map['message'] ?? 'Sign-in failed.'}');
     }
-    throw ApiException('Unknown action: $action');
+    return SupabaseSession.fromJson(data);
+  }
+
+  Future<SupabaseSession> _fresh({bool force = false}) {
+    if (!force && !_session.expiresSoon) return Future.value(_session);
+    return _refreshing ??= _auth(_client, url, key, 'refresh_token', {'refresh_token': _session.refreshToken})
+        .then((next) async {
+          _session = next.withEmail(_session.email);
+          await onSession(_session);
+          return _session;
+        })
+        .catchError((Object e) {
+          if (e is NetworkException) throw e;
+          throw ApiException('Your sign-in has expired. Sign in again in Settings.');
+        })
+        .whenComplete(() => _refreshing = null);
   }
 
   Future<Map<String, dynamic>> _rpc(String fn, Map<String, dynamic> args) async {
     for (var attempt = 0; ; attempt++) {
       final session = await _fresh(force: attempt > 0);
-      http.Response res;
-      try {
-        res = await _client
-            .post(
-              Uri.parse('$url/rest/v1/rpc/$fn'),
-              headers: {
-                'apikey': key,
-                'Authorization': 'Bearer ${session.accessToken}',
-                'Content-Type': 'application/json',
-              },
-              body: jsonEncode(args),
-            )
-            .timeout(TaskApi._timeout);
-      } on TimeoutException {
-        throw NetworkException('Supabase took too long to respond.');
-      } catch (_) {
-        throw NetworkException('Could not reach Supabase. Check your connection.');
-      }
-      if (res.statusCode == 401 && attempt == 0) continue; // Expired early; refresh once.
-      if (res.statusCode >= 500) throw NetworkException('Supabase responded ${res.statusCode}.');
+      final res = await _send(
+        () => _client.post(
+          Uri.parse('$url/rest/v1/rpc/$fn'),
+          headers: {
+            'apikey': key,
+            'Authorization': 'Bearer ${session.accessToken}',
+            'Content-Type': 'application/json',
+          },
+          body: jsonEncode(args),
+        ),
+      );
+      // The token expired early; refresh once and retry.
+      if (res.statusCode == 401 && attempt == 0) continue;
       final data = _decode(res);
       if (res.statusCode != 200 || data is! Map<String, dynamic>) {
         final map = data is Map ? data : const {};
         throw ApiException('${map['message'] ?? map['msg'] ?? 'Supabase responded ${res.statusCode}.'}');
       }
       return data;
+    }
+  }
+
+  /// Sends a request, turning outages into [NetworkException] so writes wait in the queue.
+  static Future<http.Response> _send(Future<http.Response> Function() request) async {
+    final http.Response res;
+    try {
+      res = await request().timeout(_timeout);
+    } on TimeoutException {
+      throw NetworkException('Supabase took too long to respond.');
+    } catch (_) {
+      throw NetworkException('Could not reach Supabase. Check your connection.');
+    }
+    if (res.statusCode >= 500) throw NetworkException('Supabase responded ${res.statusCode}.');
+    return res;
+  }
+
+  static Object? _decode(http.Response res) {
+    try {
+      return jsonDecode(utf8.decode(res.bodyBytes));
+    } on FormatException {
+      return null;
     }
   }
 }

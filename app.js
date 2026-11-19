@@ -18,16 +18,12 @@ const LOCAL_TASKS_KEY = 'taskboard.localTasks';
 const CACHE_KEY = 'taskboard.cache';
 const QUEUE_KEY = 'taskboard.queue';
 const LOCAL_NOTES_KEY = 'taskboard.localNotes';
-// The Google Sheets connection used before switching, kept for the one-time import.
-const SHEETS_KEY = 'taskboard.sheetsConfig';
 // This site's Supabase project. The publishable key is meant to be public:
 // row-level security keeps each account's tasks private.
 const SUPABASE_DEFAULT = {
   url: 'https://pymvievtqpkbnblmkwlz.supabase.co',
   key: 'sb_publishable_6YwB2Uok9Oyb2xwZtieevw_mIOM1HqP',
 };
-// The Apps Script API_VERSION this page needs; older scripts drop notes and My day.
-const SCRIPT_VERSION = 3;
 const NOTES_CACHE_KEY = 'taskboard.notesCache';
 
 // Smart lists in the sidebar. `test` selects tasks; `badge` is the sidebar count.
@@ -68,7 +64,7 @@ const state = {
   tasks: [],
   notes: [],
   noteSearch: '',
-  config: storageGet(CONFIG_KEY, { url: '', token: '' }),
+  config: storageGet(CONFIG_KEY, {}),
   prefs: { view: 'board', hideDone: false, theme: 'system', sort: { key: 'priority', dir: 'asc' }, savedFilters: [], ...storageGet(PREFS_KEY, {}) },
   route: parseRoute(),
   filters: { search: '', priority: '', tag: '' },
@@ -82,11 +78,10 @@ const state = {
 };
 if (state.prefs.view === 'list') state.prefs.view = 'table';
 
-const isSupabase = (config = state.config) => config.backend === 'supabase';
-const isRemote = () => (isSupabase() ? Boolean(state.config.session) : Boolean(state.config.url && state.config.token));
-const backendName = () => (isSupabase() ? 'Supabase' : 'Google Sheets');
+// Signed in to Supabase. Otherwise tasks stay in this browser (local mode).
+const isRemote = () => state.config.backend === 'supabase' && Boolean(state.config.session);
 if (isRemote()) {
-  // Show the last synced tasks at once; Apps Script can take seconds.
+  // Show the last synced tasks at once, before the network answers.
   state.tasks = storageGet(CACHE_KEY, []).map(normalize);
   state.notes = storageGet(NOTES_CACHE_KEY, []).map(normalizeNote);
   state.loaded = state.tasks.length > 0;
@@ -102,8 +97,8 @@ const savePrefs = () => storageSet(PREFS_KEY, state.prefs);
 class NetworkError extends Error {}
 
 /* ---------- Supabase ----------
-   The database functions answer like the Apps Script web app did, so the rest
-   of the app doesn't care which backend it talks to. */
+   Three database functions (supabase/schema.sql) do the work: list_all,
+   apply_ops for batched writes, and task_history. */
 class AuthError extends Error {}
 
 async function authRequest(config, grant, body) {
@@ -175,36 +170,10 @@ async function supabaseCall(fn, args, config = state.config) {
 }
 
 async function remoteCall(action, payload = {}, config = state.config) {
-  if (isSupabase(config)) {
-    if (action === 'list') return supabaseCall('list_all', {}, config);
-    if (action === 'history') return supabaseCall('task_history', { p_task_id: payload.id }, config);
-    if (action === 'batch') return supabaseCall('apply_ops', { ops: payload.ops, today: todayStr() }, config);
-    throw new Error(`Unknown action: ${action}`);
-  }
-  let res;
-  try {
-    res = await fetch(config.url, {
-      method: 'POST',
-      // text/plain keeps this a CORS "simple request", so Apps Script needs no preflight.
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action, token: config.token, ...payload }),
-    });
-  } catch {
-    throw new NetworkError('Could not reach the web app. Check the URL ends in /exec and that you are online.');
-  }
-  if (res.status >= 500) throw new NetworkError(`Server responded ${res.status}`);
-  if (!res.ok) throw new Error(`Server responded ${res.status}`);
-  let data;
-  try {
-    data = await res.json();
-  } catch {
-    throw new Error('Unexpected response. Check the web app URL and that access is set to "Anyone".');
-  }
-  if (!data.ok) {
-    if (/^Unknown action/.test(data.error)) throw new Error('Apps Script is out of date. Deploy the latest Code.gs as a new version.');
-    throw new Error(data.error || 'Request failed');
-  }
-  return data;
+  if (action === 'list') return supabaseCall('list_all', {}, config);
+  if (action === 'history') return supabaseCall('task_history', { p_task_id: payload.id }, config);
+  if (action === 'batch') return supabaseCall('apply_ops', { ops: payload.ops, today: todayStr() }, config);
+  throw new Error(`Unknown action: ${action}`);
 }
 
 const localStore = {
@@ -218,17 +187,16 @@ const localNotes = {
 
 const api = {
   async list() {
-    if (!isRemote()) return { tasks: localStore.read(), notes: localNotes.read(), version: SCRIPT_VERSION };
+    if (!isRemote()) return { tasks: localStore.read(), notes: localNotes.read() };
     const data = await remoteCall('list');
-    // A script from before notes existed sends no notes.
-    return { tasks: data.tasks, notes: data.notes || [], version: Number(data.version) || 0 };
+    return { tasks: data.tasks, notes: data.notes || [] };
   },
   async history(id) {
     return (await remoteCall('history', { id })).entries;
   },
 };
 
-// Mirrors what Apps Script does on a write, for local mode.
+// Mirrors what the database does on a write, for local mode.
 function applyLocally(op) {
   if (opKind(op) === 'note') return applyNoteLocally(op);
   const tasks = localStore.read();
@@ -364,8 +332,7 @@ async function loadTasks() {
   try {
     await flushQueue();
     if (!state.queue.length) {
-      const { tasks, notes, version } = await withSync(() => api.list());
-      state.scriptOutdated = version < SCRIPT_VERSION;
+      const { tasks, notes } = await withSync(() => api.list());
       state.tasks = tasks.map(normalize);
       state.notes = notes.map(normalizeNote);
       state.loaded = true;
@@ -714,7 +681,6 @@ function go(route) {
   location.hash = routeHash(route);
 }
 window.addEventListener('hashchange', () => {
-  if (handleConnectLink()) return;
   state.route = parseRoute();
   state.selection.clear();
   state.quickAdd = null;
@@ -911,7 +877,6 @@ function noteCardHtml(n) {
 function renderBanners() {
   $('#setupBanner').hidden = isRemote();
   $('#errorBanner').hidden = !state.syncError;
-  $('#outdatedBanner').hidden = !(isRemote() && state.scriptOutdated);
   $('#errorText').textContent = state.syncError ? `Sync error: ${state.syncError}` : '';
 }
 
@@ -931,7 +896,7 @@ function renderSync() {
     el.title = state.syncError;
   } else {
     el.classList.add('ok');
-    el.textContent = isRemote() ? `Synced with ${backendName()}` : 'Local mode';
+    el.textContent = isRemote() ? 'Synced with Supabase' : 'Local mode';
   }
 }
 
@@ -1617,46 +1582,26 @@ $$('[data-close]').forEach((b) => b.addEventListener('click', () => b.closest('d
 const settingsDialog = $('#settingsDialog');
 const settingsForm = $('#settingsForm');
 
-let settingsBackend = 'supabase';
-
 function openSettings() {
-  const sheets = !isSupabase() && isRemote();
-  settingsForm.elements.url.value = sheets ? state.config.url : '';
-  settingsForm.elements.token.value = sheets ? state.config.token : '';
-  const supa = isSupabase() ? state.config : SUPABASE_DEFAULT;
-  settingsForm.elements.supaUrl.value = supa.url;
-  settingsForm.elements.supaKey.value = supa.key;
-  settingsForm.elements.email.value = state.config.email || '';
-  settingsForm.elements.password.value = '';
+  const f = settingsForm.elements;
+  const project = isRemote() ? state.config : SUPABASE_DEFAULT;
+  f.supaUrl.value = project.url;
+  f.supaKey.value = project.key;
+  f.email.value = state.config.email || '';
+  f.password.value = '';
+  showSignedIn();
   setSettingsStatus('');
-  $('#qrSection').hidden = !setupLink();
-  showBackend(sheets ? 'sheets' : 'supabase');
   settingsDialog.showModal();
 }
 
-function showBackend(backend) {
-  settingsBackend = backend;
-  const signedIn = isSupabase() && isRemote();
-  $$('#backendSwitch button').forEach((b) => {
-    const active = b.dataset.backend === backend;
-    b.classList.toggle('active', active);
-    b.setAttribute('aria-selected', active);
-  });
-  $('#supabasePane').hidden = backend !== 'supabase';
-  $('#sheetsPane').hidden = backend !== 'sheets';
+function showSignedIn() {
+  const signedIn = isRemote();
   $('#supaSignedOut').hidden = signedIn;
   $('#supaSignedIn').hidden = !signedIn;
   $('#supaEmail').textContent = state.config.email || '';
-  $('#importBox').hidden = !signedIn || !storageGet(SHEETS_KEY, null);
-  $('#testBtn').hidden = backend !== 'sheets';
-  $('#settingsSubmit').textContent = backend === 'supabase' ? (signedIn ? 'Done' : 'Sign in') : 'Save';
-  setSettingsStatus('');
+  $('#disconnectBtn').hidden = signedIn;
+  $('#settingsSubmit').textContent = signedIn ? 'Done' : 'Sign in';
 }
-
-$('#backendSwitch').addEventListener('click', (e) => {
-  const btn = e.target.closest('[data-backend]');
-  if (btn) showBackend(btn.dataset.backend);
-});
 
 async function signIn() {
   const f = settingsForm.elements;
@@ -1676,10 +1621,8 @@ async function signIn() {
   }
   f.password.value = '';
   config.email = config.session.email || email;
-  // Keep the sheet's address so its tasks can be copied over.
-  if (!isSupabase() && isRemote()) storageSet(SHEETS_KEY, { url: state.config.url, token: state.config.token });
   connectTo(config);
-  showBackend('supabase');
+  showSignedIn();
   setSettingsStatus(`Signed in as ${config.email}.`, 'ok');
 }
 
@@ -1693,26 +1636,6 @@ $('#signOutBtn').addEventListener('click', async () => {
     headers: { apikey: config.key, Authorization: `Bearer ${config.session ? config.session.access_token : ''}` },
   }).catch(() => {});
   $('#disconnectBtn').click();
-});
-
-$('#importBtn').addEventListener('click', async () => {
-  const sheets = storageGet(SHEETS_KEY, null);
-  if (!sheets) return;
-  const btn = $('#importBtn');
-  btn.disabled = true;
-  try {
-    setSettingsStatus('Reading your Google Sheet…');
-    const { tasks, notes } = await remoteCall('list', {}, sheets);
-    setSettingsStatus('Copying to Supabase…');
-    const result = await supabaseCall('import_data', { tasks, notes: notes || [] });
-    const skipped = result.skipped ? ` Skipped ${result.skipped} that were already here or unreadable.` : '';
-    setSettingsStatus(`Imported ${plural(result.tasks, 'task')} and ${plural(result.notes, 'note')}.${skipped}`, 'ok');
-    loadTasks();
-  } catch (err) {
-    setSettingsStatus(`Import failed: ${err.message}`, 'error');
-  } finally {
-    btn.disabled = false;
-  }
 });
 
 function connectTo(config) {
@@ -1732,113 +1655,14 @@ function setSettingsStatus(text, kind = '') {
   el.className = `settings-status ${kind}`;
 }
 
-function readSettingsForm() {
-  return {
-    url: settingsForm.elements.url.value.trim(),
-    // Tolerate pasting the whole "API token: ..." line from the Apps Script log.
-    token: settingsForm.elements.token.value.replace(/^\s*(info\s+)?api token:\s*/i, '').trim(),
-  };
-}
-
-$('#testBtn').addEventListener('click', async () => {
-  const config = readSettingsForm();
-  if (!config.url || !config.token) return setSettingsStatus('Enter both the URL and the token.', 'error');
-  setSettingsStatus('Testing…');
-  try {
-    const { tasks } = await remoteCall('list', {}, config);
-    setSettingsStatus(`Connected. ${plural(tasks.length, 'task')} in the sheet.`, 'ok');
-  } catch (err) {
-    setSettingsStatus(`Failed: ${err.message}`, 'error');
-  }
-});
-
 settingsForm.addEventListener('submit', (e) => {
   e.preventDefault();
-  if (settingsBackend === 'supabase') {
-    if (isSupabase() && isRemote()) settingsDialog.close();
-    else signIn();
-    return;
-  }
-  const config = readSettingsForm();
-  if (!config.url || !config.token) return setSettingsStatus('Enter both the URL and the token.', 'error');
-  if (!/^https:\/\/script\.google(usercontent)?\.com\//.test(config.url)) {
-    return setSettingsStatus('URL should start with https://script.google.com/', 'error');
-  }
-  settingsDialog.close();
-  connectTo(config);
-});
-
-
-/* ---------- QR setup ----------
-   Setup links carry the script id and token after the #, which browsers never
-   send to a server. */
-const SCRIPT_URL = /^https:\/\/script\.google\.com\/macros\/s\/([\w-]+)\/exec$/;
-const CONNECT_LINK = /^#connect=([\w-]{20,120})\.([\w-]{16,128})$/;
-
-function setupLink() {
-  const match = SCRIPT_URL.exec(state.config.url);
-  if (!match || !state.config.token) return '';
-  return `${location.origin}${location.pathname}#connect=${match[1]}.${state.config.token}`;
-}
-
-function hideQr() {
-  $('#qrBox').hidden = true;
-  $('#qrCode').innerHTML = ''; // The code holds the token, so don't leave it around.
-  $('#qrBtn').textContent = 'Show QR code for another device';
-}
-
-$('#qrBtn').addEventListener('click', () => {
-  if (!$('#qrBox').hidden) return hideQr();
-  const qr = qrcode(0, 'M');
-  qr.addData(setupLink());
-  qr.make();
-  $('#qrCode').innerHTML = qr.createSvgTag(4, 16);
-  $('#qrBox').hidden = false;
-  $('#qrBtn').textContent = 'Hide QR code';
-});
-
-$('#copyLinkBtn').addEventListener('click', async () => {
-  try {
-    await navigator.clipboard.writeText(setupLink());
-    toast('Setup link copied. Keep it private.');
-  } catch {
-    toast('Could not copy the link.', { error: true });
-  }
-});
-
-settingsDialog.addEventListener('close', hideQr);
-
-let pendingConnect = null;
-const connectDialog = $('#connectDialog');
-
-/** Takes a setup link out of the address bar and asks before using it. */
-function handleConnectLink() {
-  if (!location.hash.startsWith('#connect=')) return false;
-  const match = CONNECT_LINK.exec(location.hash);
-  // Replacing the entry keeps the token out of the browser's history.
-  history.replaceState(null, '', location.pathname + location.search);
-  state.route = parseRoute();
-  if (!match) {
-    toast('That setup link is not valid.', { error: true });
-    return true;
-  }
-  pendingConnect = { url: `https://script.google.com/macros/s/${match[1]}/exec`, token: match[2] };
-  $('#connectScript').textContent = pendingConnect.url;
-  connectDialog.showModal();
-  return true;
-}
-
-$('#connectForm').addEventListener('submit', (e) => {
-  e.preventDefault();
-  connectDialog.close();
-  if (pendingConnect) connectTo(pendingConnect);
-});
-connectDialog.addEventListener('close', () => {
-  pendingConnect = null;
+  if (isRemote()) settingsDialog.close();
+  else signIn();
 });
 
 $('#disconnectBtn').addEventListener('click', () => {
-  state.config = { url: '', token: '' };
+  state.config = {};
   storageSet(CONFIG_KEY, state.config);
   storageSet(CACHE_KEY, []);
   state.queue = [];
@@ -2382,6 +2206,5 @@ new MutationObserver(() => {
   if (all) all.indeterminate = all.dataset.indeterminate === 'true';
 }).observe(main, { childList: true });
 
-handleConnectLink();
 render();
 loadTasks();

@@ -6,7 +6,6 @@ import 'package:http/testing.dart';
 import 'package:taskboard/models/note.dart';
 import 'package:taskboard/models/task.dart';
 import 'package:taskboard/services/api.dart';
-import 'package:taskboard/services/setup_link.dart';
 
 void main() {
   group('Note', () {
@@ -134,113 +133,7 @@ void main() {
     });
   });
 
-  group('SetupLink', () {
-    const id = 'AKfycbExampleScriptId_123-abcdefgh';
-    const token = 'abcdef0123456789abcdef0123456789';
-
-    test('reads a setup link', () {
-      final link = SetupLink.parse('https://prabhagaran.github.io/taskboard/#connect=$id.$token')!;
-      expect(link.url, 'https://script.google.com/macros/s/$id/exec');
-      expect(link.token, token);
-    });
-
-    test('always points at Google, whatever the code says', () {
-      final link = SetupLink.parse('https://evil.example/#connect=$id.$token')!;
-      expect(Uri.parse(link.url).host, 'script.google.com');
-    });
-
-    test('rejects anything else', () {
-      expect(SetupLink.parse('https://example.com/'), isNull);
-      expect(SetupLink.parse('#connect=short.short'), isNull);
-      expect(SetupLink.parse('#connect=$id.$token/../x'), isNull);
-    });
-  });
-
   group('TaskApi', () {
-    test('follows the Apps Script redirect after a POST', () async {
-      final calls = <String>[];
-      final client = MockClient((request) async {
-        calls.add(request.method);
-        if (request.method == 'POST') {
-          return http.Response('', 302, headers: {'location': 'https://script.googleusercontent.com/echo'});
-        }
-        return http.Response(
-          jsonEncode({
-            'ok': true,
-            'tasks': [
-              {'id': '1', 'title': 'Hello', 'status': 'done'},
-            ],
-          }),
-          200,
-        );
-      });
-      final data = await TaskApi(url: 'https://script.google.com/x/exec', token: 't', client: client).list();
-      expect(calls, ['POST', 'GET']);
-      expect(data.tasks.single.status, TaskStatus.done);
-      expect(data.notes, isEmpty, reason: 'a script from before notes sends none');
-      expect(data.version, 0, reason: 'old scripts send no version, so they read as out of date');
-    });
-
-    test('reads notes with their linked tasks', () async {
-      final client = MockClient((_) async => http.Response(
-            jsonEncode({
-              'ok': true,
-              'version': 3,
-              'tasks': [],
-              'notes': [
-                {'id': 'n1', 'title': 'Plan', 'body': 'Steps', 'taskIds': 't1, t2'},
-              ],
-            }),
-            200,
-          ));
-      final data = await TaskApi(url: 'https://script.google.com/x/exec', token: 't', client: client).list();
-      expect(data.notes.single.taskIds, ['t1', 't2']);
-      expect(data.version, 3);
-    });
-
-    test('reports the server error message', () async {
-      final client = MockClient((_) async => http.Response(jsonEncode({'ok': false, 'error': 'Invalid API token.'}), 200));
-      final api = TaskApi(url: 'https://script.google.com/x/exec', token: 'bad', client: client);
-      await expectLater(
-        api.list(),
-        throwsA(isA<ApiException>().having((e) => e.message, 'message', 'Invalid API token.')),
-      );
-    });
-
-    test('treats server outages as retryable', () async {
-      final client = MockClient((_) async => http.Response('', 503));
-      final api = TaskApi(url: 'https://script.google.com/x/exec', token: 't', client: client);
-      await expectLater(api.list(), throwsA(isA<NetworkException>()));
-    });
-
-    test('treats a dropped connection as retryable', () async {
-      final client = MockClient((_) async => throw http.ClientException('no route'));
-      final api = TaskApi(url: 'https://script.google.com/x/exec', token: 't', client: client);
-      await expectLater(api.list(), throwsA(isA<NetworkException>()));
-    });
-
-    test('does not retry a refusal', () async {
-      final client = MockClient((_) async => http.Response(jsonEncode({'ok': false, 'error': 'Invalid API token.'}), 200));
-      final api = TaskApi(url: 'https://script.google.com/x/exec', token: 't', client: client);
-      await expectLater(api.list(), throwsA(isNot(isA<NetworkException>())));
-    });
-
-    test('explains an outdated Apps Script', () async {
-      final client = MockClient((_) async => http.Response(jsonEncode({'ok': false, 'error': 'Unknown action: batch'}), 200));
-      final api = TaskApi(url: 'https://script.google.com/x/exec', token: 't', client: client);
-      await expectLater(
-        api.list(),
-        throwsA(isA<ApiException>().having((e) => e.message, 'message', contains('out of date'))),
-      );
-    });
-
-    test('explains an HTML sign-in page', () async {
-      final client = MockClient((_) async => http.Response('<html>Sign in</html>', 200));
-      final api = TaskApi(url: 'https://script.google.com/x/exec', token: 't', client: client);
-      await expectLater(api.list(), throwsA(isA<ApiException>()));
-    });
-  });
-  group('SupabaseApi', () {
     SupabaseSession session({int expiresIn = 3600}) => SupabaseSession(
           accessToken: 'old-access',
           refreshToken: 'old-refresh',
@@ -261,7 +154,7 @@ void main() {
             }),
             200);
       });
-      final s = await SupabaseApi.signIn('me@example.com', 'pw', client: client);
+      final s = await TaskApi.signIn('me@example.com', 'pw', client: client);
       expect(seen.url.path, '/auth/v1/token');
       expect(seen.url.queryParameters['grant_type'], 'password');
       expect(seen.headers['apikey'], supabaseKey);
@@ -275,7 +168,7 @@ void main() {
       final client = MockClient((_) async =>
           http.Response(jsonEncode({'error': 'invalid_grant', 'error_description': 'Invalid login credentials'}), 400));
       expect(
-        () => SupabaseApi.signIn('me@example.com', 'bad', client: client),
+        () => TaskApi.signIn('me@example.com', 'bad', client: client),
         throwsA(isA<ApiException>().having((e) => e.message, 'message', 'Invalid login credentials')),
       );
     });
@@ -292,8 +185,8 @@ void main() {
         }
         return http.Response(jsonEncode({'ok': true, 'entries': []}), 200);
       });
-      final api = SupabaseApi(session: session(), onSession: (_) async {}, client: client);
-      expect((await api.list()).version, 4);
+      final api = TaskApi(session: session(), onSession: (_) async {}, client: client);
+      expect((await api.list()).tasks, isEmpty);
       await api.batch([{'action': 'delete', 'id': 't1'}]);
       await api.history('t1');
       expect(calls.map((c) => c.url.path), ['/rest/v1/rpc/list_all', '/rest/v1/rpc/apply_ops', '/rest/v1/rpc/task_history']);
@@ -313,7 +206,7 @@ void main() {
         if (req.headers['Authorization'] == 'Bearer old-access') return http.Response('{"message":"JWT expired"}', 401);
         return http.Response(jsonEncode({'ok': true, 'version': 4, 'tasks': [], 'notes': []}), 200);
       });
-      final api = SupabaseApi(session: session(), onSession: (s) async => saved = s, client: client);
+      final api = TaskApi(session: session(), onSession: (s) async => saved = s, client: client);
       await api.list();
       expect(paths, ['/rest/v1/rpc/list_all', '/auth/v1/token', '/rest/v1/rpc/list_all']);
       expect(saved?.refreshToken, 'new-refresh');
@@ -324,13 +217,49 @@ void main() {
       final client = MockClient((req) async => req.url.path == '/auth/v1/token'
           ? http.Response('{"error_description":"Invalid Refresh Token"}', 400)
           : http.Response('{}', 200));
-      final api = SupabaseApi(session: session(expiresIn: 0), onSession: (_) async {}, client: client);
+      final api = TaskApi(session: session(expiresIn: 0), onSession: (_) async {}, client: client);
       expect(api.list(), throwsA(isA<ApiException>().having((e) => e.message, 'message', contains('Sign in again'))));
+    });
+
+    test('reads tasks and notes with their linked tasks', () async {
+      final client = MockClient((_) async => http.Response(
+            jsonEncode({
+              'ok': true,
+              'tasks': [
+                {'id': 't1', 'title': 'Plan', 'status': 'done', 'focusDate': todayKey()},
+              ],
+              'notes': [
+                {'id': 'n1', 'title': 'Plan', 'body': 'Steps', 'taskIds': 't1, t2'},
+              ],
+            }),
+            200,
+          ));
+      final data = await TaskApi(session: session(), onSession: (_) async {}, client: client).list();
+      expect(data.tasks.single.status, TaskStatus.done);
+      expect(data.tasks.single.isFocus, isTrue);
+      expect(data.notes.single.taskIds, ['t1', 't2']);
+    });
+
+    test('reports the database error message and does not retry it', () async {
+      final client = MockClient((_) async => http.Response(jsonEncode({'message': 'permission denied for function apply_ops'}), 403));
+      final api = TaskApi(session: session(), onSession: (_) async {}, client: client);
+      expect(
+        api.batch([]),
+        throwsA(isA<ApiException>()
+            .having((e) => e is NetworkException, 'retryable', isFalse)
+            .having((e) => e.message, 'message', 'permission denied for function apply_ops')),
+      );
+    });
+
+    test('treats Supabase outages as retryable', () async {
+      final client = MockClient((_) async => http.Response('Bad gateway', 502));
+      final api = TaskApi(session: session(), onSession: (_) async {}, client: client);
+      expect(api.list(), throwsA(isA<NetworkException>()));
     });
 
     test('queues writes when Supabase is unreachable', () async {
       final client = MockClient((_) async => throw const SocketExceptionStub());
-      final api = SupabaseApi(session: session(), onSession: (_) async {}, client: client);
+      final api = TaskApi(session: session(), onSession: (_) async {}, client: client);
       expect(api.batch([]), throwsA(isA<NetworkException>()));
     });
   });

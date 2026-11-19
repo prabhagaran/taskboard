@@ -124,10 +124,7 @@ class TaskTile extends StatelessWidget {
       child: ListTile(
         onTap: () => openEditor(context, task: task),
         contentPadding: const EdgeInsets.only(left: 8, right: 16),
-        leading: Checkbox(
-          value: done,
-          onChanged: (value) => store.setDone(task, value ?? false),
-        ),
+        leading: Checkbox(value: done, onChanged: (value) => store.setDone(task, value ?? false)),
         title: Text(
           task.title,
           maxLines: 2,
@@ -153,28 +150,18 @@ class TaskTile extends StatelessWidget {
               if (task.dueDate.isNotEmpty)
                 _Meta(
                   icon: task.isOverdue ? Icons.error_outline : Icons.event_outlined,
-                  label: task.isOverdue
-                      ? 'Overdue · ${dueLabel(task.dueDate)}'
-                      : dueLabel(task.dueDate),
+                  label: task.isOverdue ? 'Overdue · ${dueLabel(task.dueDate)}' : dueLabel(task.dueDate),
                   color: task.isOverdue ? priorityColor(context, TaskPriority.high) : null,
                 ),
-              if (task.project.isNotEmpty)
-                _Meta(icon: Icons.folder_outlined, label: task.project),
-              if (task.tagList.isNotEmpty)
-                _Meta(icon: Icons.sell_outlined, label: task.tagList.join(', ')),
-              if (task.linkList.isNotEmpty)
-                _Meta(icon: Icons.link, label: '${task.linkList.length}'),
-              if (notes > 0)
-                _Meta(icon: Icons.sticky_note_2_outlined, label: '$notes'),
+              if (task.project.isNotEmpty) _Meta(icon: Icons.folder_outlined, label: task.project),
+              if (task.tagList.isNotEmpty) _Meta(icon: Icons.sell_outlined, label: task.tagList.join(', ')),
+              if (task.linkList.isNotEmpty) _Meta(icon: Icons.link, label: '${task.linkList.length}'),
+              if (notes > 0) _Meta(icon: Icons.sticky_note_2_outlined, label: '$notes'),
               if (task.isFocus && !done)
                 _Meta(icon: Icons.wb_sunny_outlined, label: 'My day', color: Theme.of(context).colorScheme.tertiary),
               if (task.steps.isNotEmpty)
-                _Meta(
-                  icon: Icons.checklist,
-                  label: '${task.steps.where((s) => s.done).length}/${task.steps.length}',
-                ),
-              if (task.recurrence.isNotEmpty)
-                _Meta(icon: Icons.repeat, label: recurrenceLabels[task.recurrence]!),
+                _Meta(icon: Icons.checklist, label: '${task.steps.where((s) => s.done).length}/${task.steps.length}'),
+              if (task.recurrence.isNotEmpty) _Meta(icon: Icons.repeat, label: recurrenceLabels[task.recurrence]!),
             ],
           ),
         ),
@@ -211,12 +198,7 @@ class _Meta extends StatelessWidget {
 }
 
 class _SwipeBackground extends StatelessWidget {
-  const _SwipeBackground({
-    required this.color,
-    required this.icon,
-    required this.label,
-    required this.alignment,
-  });
+  const _SwipeBackground({required this.color, required this.icon, required this.label, required this.alignment});
 
   final Color color;
   final IconData icon;
@@ -234,7 +216,10 @@ class _SwipeBackground extends StatelessWidget {
         children: [
           Icon(icon, color: Colors.white),
           const SizedBox(width: 8),
-          Text(label, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+          Text(
+            label,
+            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+          ),
         ],
       ),
     );
@@ -279,7 +264,7 @@ class SyncErrorBar extends StatelessWidget {
     final store = StoreScope.of(context);
     final error = store.syncError;
     final waiting = store.queue.length;
-    if (error == null && waiting == 0 && !store.scriptOutdated) return const SizedBox.shrink();
+    if (error == null && waiting == 0) return const SizedBox.shrink();
     final scheme = Theme.of(context).colorScheme;
     return Material(
       color: scheme.errorContainer,
@@ -295,9 +280,7 @@ class SyncErrorBar extends StatelessWidget {
                 child: Text(
                   waiting > 0
                       ? '$waiting change${waiting == 1 ? '' : 's'} waiting to sync. Tap to retry.'
-                      : error != null
-                          ? 'Showing saved tasks. $error Tap to retry.'
-                          : 'Apps Script is out of date, so notes and My day won\'t save. Paste the latest Code.gs and deploy a new version.',
+                      : 'Showing saved tasks. $error Tap to retry.',
                   style: TextStyle(color: scheme.onErrorContainer, fontSize: 13),
                 ),
               ),

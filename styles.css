@@ -519,13 +519,6 @@ dialog::backdrop { background: rgba(8, 10, 14, 0.45); backdrop-filter: blur(1px)
 .modal p { margin: 0; }
 .modal-foot { display: flex; gap: 8px; align-items: center; padding-top: 6px; }
 .settings-status { font-size: 12.5px; min-height: 18px; }
-.qr-section { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding-top: 12px; border-top: 1px solid var(--border); }
-.qr-section #qrBox { display: flex; flex-direction: column; align-items: center; gap: 10px; width: 100%; text-align: center; }
-.qr-section #qrBox[hidden] { display: none; }
-/* Scanners need dark modules on white, whatever the theme. */
-.qr-code { width: min(280px, 100%); background: #fff; border-radius: var(--radius); line-height: 0; }
-.qr-code svg { width: 100%; height: auto; }
-#connectScript { overflow-wrap: anywhere; }
 .settings-status.ok { color: var(--good); }
 .settings-status.error { color: var(--critical); }
 
@@ -651,10 +644,8 @@ dialog::backdrop { background: rgba(8, 10, 14, 0.45); backdrop-filter: blur(1px)
 }
 
 /* Connection settings */
-#backendSwitch { align-self: flex-start; }
 .settings-pane { display: flex; flex-direction: column; gap: 14px; }
 .settings-pane[hidden] { display: none; }
 .settings-pane p { margin: 0; }
-.import-box { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); }
 .advanced summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 .advanced[open] { display: flex; flex-direction: column; gap: 12px; }
